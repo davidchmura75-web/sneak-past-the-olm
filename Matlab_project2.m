@@ -1,173 +1,329 @@
 % P2M4 Matlab
 % D.Chmura
-% 11/2/26  (cave sea theme + auto-reconnect added 11/14/26)
+% 11/2/26
 % Vibration Level Detection
-% Listens for data from the pico and converts it to the current game state
-% and changes that based on pico inputs.
-% If the Pico crashes or gets unplugged, this keeps running and reconnects
-% on its own as soon as the Pico comes back.
 
 clear; clc; close all;
 
 %% Settings
-PICO_PORT = "";     % "" = auto pick the port, or pin it like "COM5"
+PICO_PORT = "";     % "" = auto pick
 BAUD = 9600;
-IDLE_TIMEOUT = 10;  % seconds of no activity before going back to the start screen
-NO_DATA_KICK = 3;   % seconds of silence before sending the Pico a soft reset
-NO_DATA_DROP = 8;   % seconds of silence before closing the port and reconnecting
+IDLE_TIMEOUT = 10;  % seconds until reset
+NO_DATA_KICK = 3;   % seconds until soft reset
+NO_DATA_DROP = 8;   % seconds until reconnect
 
-%% Cave sea color palette
-C.abyss = [0.02 0.09 0.17];   % deep water background
-C.card  = [0.05 0.19 0.30];   % slightly lighter panels
-C.aqua  = [0.30 0.95 0.90];   % bioluminescent cyan
-C.text  = [0.82 0.96 1.00];   % pale sea-foam text
-C.glow  = [0.40 1.00 0.65];   % glowing green
-C.coral = [1.00 0.42 0.45];   % coral red
-C.gold  = [1.00 0.80 0.35];   % lantern gold
+%% Colors
+C.abyss = [0.02 0.09 0.17];
+C.card  = [0.05 0.19 0.30];
+C.aqua  = [0.30 0.95 0.90];
+C.text  = [0.82 0.96 1.00];
+C.glow  = [0.40 1.00 0.65];
+C.coral = [1.00 0.42 0.45];
+C.gold  = [1.00 0.80 0.35];
 
-%% Build the interface
-fig = uifigure("Name", "Olm Cavern - Vibration Detection", ...
-    "Color", C.abyss, "Position", [100 100 900 620], ...
+%% Font
+% Oh Whale (fonts/OhWhale-oYZq.ttf) - installed for this user if missing
+FONT = "Oh Whale";
+if ~any(strcmp(listfonts, FONT))
+    fontSrc = fullfile(fileparts(mfilename("fullpath")), "fonts", "OhWhale-oYZq.ttf");
+    fontDir = fullfile(getenv("LOCALAPPDATA"), "Microsoft", "Windows", "Fonts");
+    if ~isfolder(fontDir), mkdir(fontDir); end
+    fontDst = fullfile(fontDir, "OhWhale-oYZq.ttf");
+    copyfile(fontSrc, fontDst);
+    system("reg add ""HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts"" " + ...
+        "/v ""Oh Whale (TrueType)"" /t REG_SZ /d """ + fontDst + """ /f");
+    warning("Installed the Oh Whale font - restart MATLAB if it doesn't show up.");
+end
+
+%% Main page window
+% Use second monitor
+mons = get(groot, "MonitorPositions");
+if size(mons, 1) > 1
+    mainPos = [mons(2,1)+60 mons(2,2)+60 900 620];
+else
+    mainPos = [520 120 900 620];
+end
+
+fig = uifigure("Name", "Olm Cavern", ...
+    "Color", C.abyss, "Position", mainPos, ...
     "AutoResizeChildren", "off");
 
-% Grid layout so everything stretches when the window is resized or fullscreen.
-% Outer rows/columns are margins.
-root = uigridlayout(fig, [10 5], ...
-    "RowHeight", {12, 60, '1x', 32, 32, 32, 26, 46, 30, 10}, ...
-    "ColumnWidth", {16, 32, '1x', '1.2x', 16}, ...
-    "Padding", 0, "RowSpacing", 6, "ColumnSpacing", 12, ...
+%% Admin page window
+adminFig = uifigure("Name", "Olm Cavern - Admin", ...
+    "Color", C.abyss, "Position", [40 60 1100 680], ...
+    "AutoResizeChildren", "off");
+
+aRoot = uigridlayout(adminFig, [6 2], ...
+    "RowHeight", {40, '1x', 26, 46, 30, 4}, ...
+    "ColumnWidth", {'1.7x', '1x'}, ...
+    "Padding", [16 10 16 10], "RowSpacing", 6, "ColumnSpacing", 14, ...
     "BackgroundColor", C.abyss);
 
-titleLbl = uilabel(root, "Text", "OLM CAVERN  -  Vibration Detection", ...
-    "FontSize", 28, "FontWeight", "bold", "FontColor", C.aqua);
-titleLbl.Layout.Row = 2; titleLbl.Layout.Column = [2 4];
+adminTtl = uilabel(aRoot, "Text", "ADMIN  -  Olm Cavern", ...
+    "FontName", FONT, "FontSize", 24,"FontWeight", "bold", "FontColor", C.aqua);
+adminTtl.Layout.Row = 1; adminTtl.Layout.Column = [1 2];
 
-% Image drawn by me fr
-im = uiimage(root, "ImageSource", "olm_image.png");
-im.Layout.Row = 3; im.Layout.Column = [2 3];
+% Main page preview
+previewPnl = uipanel(aRoot, "Title", "Main page preview", ...
+    "BackgroundColor", C.abyss, "ForegroundColor", C.text, ...
+    "FontWeight", "bold", "AutoResizeChildren", "off");
+previewPnl.Layout.Row = 2; previewPnl.Layout.Column = 1;
 
-% Gauge for displaying vibrations
-g = uigauge(root, ...
-    "BackgroundColor", C.card, "FontColor", C.text, ...
-    "ScaleColors", [C.glow; C.gold; C.coral], ...
-    "ScaleColorLimits", [0 60; 60 80; 80 100]);
-g.Layout.Row = [3 6]; g.Layout.Column = 4;
-g.Value = 0;
+% Sensor panel
+sensPnl = uipanel(aRoot, "Title", "Sensors", ...
+    "BackgroundColor", C.card, "ForegroundColor", C.text, "FontWeight", "bold");
+sensPnl.Layout.Row = 2; sensPnl.Layout.Column = 2;
+sg = uigridlayout(sensPnl, [8 2], ...
+    "RowHeight", {32, 32, 32, 32, 32, 32, 32, '1x'}, ...
+    "ColumnWidth", {28, '1x'}, "Padding", 12, "RowSpacing", 8, ...
+    "BackgroundColor", C.card);
 
-% Lamps for showing if a part is on each beam
-startLamp = uilamp(root, "Color", C.glow);
-startLamp.Layout.Row = 4; startLamp.Layout.Column = 2;
-startLbl = uilabel(root, "Text", "Start Beam: clear", ...
+% Beam lamps
+startLamp = uilamp(sg, "Color", C.glow);
+startLamp.Layout.Row = 1; startLamp.Layout.Column = 1;
+startLbl = uilabel(sg, "Text", "Start Beam: clear", ...
     "FontSize", 16, "FontWeight", "bold", "FontColor", C.text);
-startLbl.Layout.Row = 4; startLbl.Layout.Column = 3;
+startLbl.Layout.Row = 1; startLbl.Layout.Column = 2;
 
-endLamp = uilamp(root, "Color", C.glow);
-endLamp.Layout.Row = 5; endLamp.Layout.Column = 2;
-endLbl = uilabel(root, "Text", "End Beam: clear", ...
+endLamp = uilamp(sg, "Color", C.glow);
+endLamp.Layout.Row = 2; endLamp.Layout.Column = 1;
+endLbl = uilabel(sg, "Text", "End Beam: clear", ...
     "FontSize", 16, "FontWeight", "bold", "FontColor", C.text);
-endLbl.Layout.Row = 5; endLbl.Layout.Column = 3;
+endLbl.Layout.Row = 2; endLbl.Layout.Column = 2;
 
-% Label for the start button
-btnLbl = uilabel(root, "Text", "Start Button: not pressed", ...
+% Start button
+btnLbl = uilabel(sg, "Text", "Start Button: not pressed", ...
     "FontSize", 16, "FontWeight", "bold", "FontColor", C.text);
-btnLbl.Layout.Row = 6; btnLbl.Layout.Column = [2 3];
+btnLbl.Layout.Row = 3; btnLbl.Layout.Column = [1 2];
 btnPresses = 0;
 
-% Two way slider for setting min and max for vibration detection
-sldLbl = uilabel(root, "Text", "Adjust Accelerometer Sensitivity!", ...
+% Readouts
+vibLbl = uilabel(sg, "Text", "Accelerometer: --", ...
+    "FontSize", 16, "FontWeight", "bold", "FontColor", C.text);
+vibLbl.Layout.Row = 4; vibLbl.Layout.Column = [1 2];
+brtLbl = uilabel(sg, "Text", "LED Brightness: 0", ...
+    "FontSize", 16, "FontWeight", "bold", "FontColor", C.text);
+brtLbl.Layout.Row = 5; brtLbl.Layout.Column = [1 2];
+stateLbl = uilabel(sg, "Text", "Game State: start", ...
     "FontSize", 16, "FontWeight", "bold", "FontColor", C.gold);
-sldLbl.Layout.Row = 7; sldLbl.Layout.Column = [2 4];
+stateLbl.Layout.Row = 6; stateLbl.Layout.Column = [1 2];
+idleLbl = uilabel(sg, "Text", "Idle: 0 s", ...
+    "FontSize", 16, "FontWeight", "bold", "FontColor", C.text);
+idleLbl.Layout.Row = 7; idleLbl.Layout.Column = [1 2];
 
-sld = uislider(root, "range");
-sld.Layout.Row = 8; sld.Layout.Column = [2 4];
+% Sensitivity slider
+sldLbl = uilabel(aRoot, "Text", "Adjust Accelerometer Sensitivity!", ...
+    "FontSize", 16, "FontWeight", "bold", "FontColor", C.gold);
+sldLbl.Layout.Row = 3; sldLbl.Layout.Column = [1 2];
+
+sld = uislider(aRoot, "range");
+sld.Layout.Row = 4; sld.Layout.Column = [1 2];
 sld.Step = 0.1;
 sld.Limits = [0 10];
 sld.Value = [1 7];
 sld.FontColor = C.text;
-sld.ValueChangedFcn = @(src, evt) disp(src.Value);
 
-% Connection status + fullscreen button
-statusLbl = uilabel(root, "Text", "Searching for Pico...", ...
+% Status and fullscreen
+statusLbl = uilabel(aRoot, "Text", "Searching for Pico...", ...
     "FontSize", 14, "FontWeight", "bold", "FontColor", C.gold);
-statusLbl.Layout.Row = 9; statusLbl.Layout.Column = [2 3];
+statusLbl.Layout.Row = 5; statusLbl.Layout.Column = 1;
 
-fsBtn = uibutton(root, "Text", "Fullscreen (F11)", ...
+fsBtn = uibutton(aRoot, "Text", "Main page fullscreen (F11)", ...
     "FontWeight", "bold", "FontColor", C.abyss, "BackgroundColor", C.aqua);
-fsBtn.Layout.Row = 9; fsBtn.Layout.Column = 4;
-fsBtn.ButtonPushedFcn = @(~, ~) toggleFullscreen(fig, fsBtn);
-fig.WindowKeyPressFcn = @(src, evt) onKey(src, evt, fsBtn);
+fsBtn.Layout.Row = 5; fsBtn.Layout.Column = 2;
 
-% Start, win, and lose screens - each one covers the whole window
-[startScreen, startTtl, startSub, startHint] = makeScreen(root, ...
-    [0.02 0.16 0.24], "Start", C.aqua, ...
-    "Press the start button to dive into the cavern", C);
-[winScreen, winTtl, winSub, winHint] = makeScreen(root, ...
-    [0.02 0.20 0.16], "Win", C.glow, ...
-    "You made it through the cave without waking the olm up!", C);
-[loseScreen, loseTtl, loseSub, loseHint] = makeScreen(root, ...
-    [0.22 0.04 0.09], "Lose", C.coral, ...
-    "Too much vibrations - the olm woke up...", C);
-winScreen.Visible = "off";
-loseScreen.Visible = "off";
+% Button/keys leave a request
+fsBtn.ButtonPushedFcn = @(~, ~) set(fsBtn, "UserData", "f11");
+fig.WindowKeyPressFcn = @(~, evt) set(fsBtn, "UserData", evt.Key);
+adminFig.WindowKeyPressFcn = @(~, evt) set(fsBtn, "UserData", evt.Key);
 
-% Disconnected screen - made last so it sits on top of everything
-[connScreen, connTtl, connSub, connHint] = makeScreen(root, ...
-    [0.07 0.06 0.20], "Pico lost", C.gold, ...
-    "Plug in or restart the Pico - it will reconnect automatically", C);
-connHint.Text = "Searching...";
+% Close both together
+fig.CloseRequestFcn = @(~, ~) delete([fig adminFig]);
+adminFig.CloseRequestFcn = @(~, ~) delete([fig adminFig]);
 
-% Scale the big text with the window size (so fullscreen looks right)
-bigLbls = [startTtl winTtl loseTtl connTtl];
-subLbls = [startSub winSub loseSub connSub startHint winHint loseHint connHint];
-fig.SizeChangedFcn = @(src, ~) scaleFonts(src, bigLbls, subLbls, titleLbl);
-scaleFonts(fig, bigLbls, subLbls, titleLbl);
+%% Game page (built twice)
+% 1 = main page, 2 = admin preview
+parents = {fig, previewPnl};
 
-%% Game state - "start", "playing", "win", or "lose"
-gameState = "start";
-startBeamOn = false;    % true when a part is on the start beam
+% Overlay screens: start, win, lose, Pico lost
+scrBg    = [0.02 0.16 0.24; 0.02 0.20 0.16; 0.22 0.04 0.09; 0.07 0.06 0.20];
+scrTitle = ["Start", "Win", "Lose", "Pico lost"];
+scrColor = [C.aqua; C.glow; C.coral; C.gold];
+scrSub   = ["Press the start button to dive into the cavern", ...
+            "You made it through the cave without waking the olm up!", ...
+            "Too much vibrations - the olm woke up...", ...
+            "Plug in or restart the Pico - it will reconnect automatically"];
+
+gauges  = gobjects(2, 1);
+titles  = gobjects(2, 1);
+screens = gobjects(2, 4);
+bigLbls = gobjects(2, 4);
+subLbls = gobjects(2, 4);
+hints   = gobjects(2, 4);
+
+for k = 1:2
+    grid = uigridlayout(parents{k}, [4 4], ...
+        "RowHeight", {'0.03x', '0.12x', '1x', '0.04x'}, ...
+        "ColumnWidth", {'0.02x', '1.3x', '1x', '0.02x'}, ...
+        "Padding", 0, "RowSpacing", 6, "ColumnSpacing", 12, ...
+        "BackgroundColor", C.abyss);
+
+    titles(k) = uilabel(grid, "Text", "OLM CAVERN  -  Vibration Detection", ...
+        "FontName", FONT, "FontSize", 28, "FontWeight", "bold", "FontColor", C.aqua);
+    titles(k).Layout.Row = 2; titles(k).Layout.Column = [2 3];
+
+    % Drawn by me fr
+    img = uiimage(grid, "ImageSource", "olm_image.png");
+    img.Layout.Row = 3; img.Layout.Column = 2;
+
+    % Vibration gauge
+    gauges(k) = uigauge(grid, ...
+        "BackgroundColor", C.card, "FontColor", C.text, ...
+        "ScaleColors", [C.glow; C.gold; C.coral], ...
+        "ScaleColorLimits", [0 60; 60 80; 80 100]);
+    gauges(k).Layout.Row = 3; gauges(k).Layout.Column = 3;
+
+    % Full-page overlays
+    for s = 1:4
+        pnl = uipanel(grid, "BorderType", "none", "BackgroundColor", scrBg(s,:));
+        pnl.Layout.Row = [1 4]; pnl.Layout.Column = [1 4];
+
+        if s == 1
+            % Start page olm
+            rows = {'0.35x', '1.2x', '0.55x', '0.15x', '0.15x', '0.1x'};
+            ttlRow = 3;
+        else
+            rows = {'1x', '0.9x', '0.18x', '0.18x', '0.6x'};
+            ttlRow = 2;
+        end
+        gl = uigridlayout(pnl, [numel(rows) 1], "RowHeight", rows, ...
+            "ColumnWidth", {'1x'}, "Padding", 0, "RowSpacing", 0, ...
+            "BackgroundColor", scrBg(s,:));
+        if s == 1
+            olm = uiimage(gl, "ImageSource", "olm_start.png", "ScaleMethod", "fit");
+            olm.Layout.Row = 2;
+        end
+
+        bigLbls(k,s) = uilabel(gl, "Text", scrTitle(s), "FontName", FONT, "FontSize", 80, ...
+            "FontWeight", "bold", "FontColor", scrColor(s,:), ...
+            "HorizontalAlignment", "center", "VerticalAlignment", "bottom");
+        bigLbls(k,s).Layout.Row = ttlRow;
+        subLbls(k,s) = uilabel(gl, "Text", scrSub(s), "FontName", FONT, "FontSize", 22, ...
+            "FontColor", C.text, "HorizontalAlignment", "center");
+        subLbls(k,s).Layout.Row = ttlRow + 1;
+        hints(k,s) = uilabel(gl, "Text", "Move to start", "FontName", FONT, "FontSize", 24, ...
+            "FontWeight", "bold", "FontColor", C.gold, "HorizontalAlignment", "center");
+        hints(k,s).Layout.Row = ttlRow + 2;
+
+        screens(k,s) = pnl;
+    end
+    hints(k,4).Text = "Searching...";
+end
+
+lastHeights = [0 0];
+
+%% Game state
+gameState = "start";    % start/playing/win/lose
+startBeamOn = false;
 lastActivity = tic;
 
-% Vibration Level - ignore the warning, solely declaring the variable pulls
-% up a physics demonstration
 vibes = 0.0;
 Brightness = 0.0;
 history = zeros(1, 5);
 
-% Vibration Threshold
 vibrationThreshold = 1.0;
 vibrationMax = 7.0;
 
 %% Connection state
-PicoObj = [];               % empty = not connected
-picoPort = PICO_PORT;       % last port we connected on
-pinned = PICO_PORT ~= "";   % only ever use the pinned port
-lastData = tic;             % last time we heard anything from the Pico
-lastRetry = tic;            % last connection attempt
-lastPortCheck = tic;        % last time we checked the port still exists
-kicked = false;             % already sent a soft reset for this silence
+PicoObj = [];
+picoPort = PICO_PORT;
+pinned = PICO_PORT ~= "";
+lastData = tic;
+lastRetry = tic;
+lastPortCheck = tic;
+kicked = false;
 firstTry = true;
 
-%% Main loop - runs until the window is closed
-while isvalid(fig)
+%% Main loop
+while isvalid(fig) && isvalid(adminFig)
 
-    % ---------- Not connected: keep trying, keep the UI alive ----------
+    % Fullscreen request
+    key = "";
+    if ~isempty(fsBtn.UserData)
+        key = string(fsBtn.UserData);
+        fsBtn.UserData = [];
+    end
+    if key == "f11" || (key == "escape" && fig.WindowState == "fullscreen")
+        if fig.WindowState == "fullscreen"
+            fig.WindowState = "normal";
+            fsBtn.Text = "Main page fullscreen (F11)";
+        else
+            fig.WindowState = "fullscreen";
+            fsBtn.Text = "Exit main fullscreen (Esc)";
+        end
+    end
+
+    % Text scales with size
+    heights = [fig.Position(4) previewPnl.Position(4)];
+    for k = 1:2
+        if heights(k) ~= lastHeights(k)
+            h = heights(k);
+            set(bigLbls(k,:), "FontSize", max(16, round(h * 0.15)));
+            set([subLbls(k,:) hints(k,:)], "FontSize", max(8, round(h * 0.035)));
+            titles(k).FontSize = max(10, round(h * 0.045));
+        end
+    end
+    lastHeights = heights;
+
+    % Show screen for state
+    set(screens(:,1), "Visible", gameState == "start");
+    set(screens(:,2), "Visible", gameState == "win");
+    set(screens(:,3), "Visible", gameState == "lose");
+    set(screens(:,4), "Visible", isempty(PicoObj));
+    set(hints(:,1:3), "Visible", ~startBeamOn);
+
+    % Admin readouts
+    stateLbl.Text = "Game State: " + gameState;
+    idleLbl.Text = sprintf("Idle: %.0f s (resets at %d s)", toc(lastActivity), IDLE_TIMEOUT);
+
+    % Not connected
     if isempty(PicoObj)
         if firstTry || toc(lastRetry) > 1
             firstTry = false;
             lastRetry = tic;
-            [PicoObj, newPort] = connectPico(picoPort, pinned, BAUD);
+
+            % Pick a port
+            ports = serialportlist("available");
+            tryPort = "";
+            if any(ports == picoPort)
+                tryPort = picoPort;
+            elseif ~pinned && ~isempty(ports)
+                tryPort = ports(end);
+            end
+
+            % Try opening it
+            if tryPort ~= ""
+                try
+                    PicoObj = serialport(tryPort, BAUD, "Timeout", 0.5);
+                    configureTerminator(PicoObj, "LF");
+                    flush(PicoObj);
+                catch
+                    PicoObj = [];   % still booting
+                end
+            end
+
             if ~isempty(PicoObj)
-                picoPort = newPort;
+                picoPort = tryPort;
                 lastData = tic;
                 lastPortCheck = tic;
                 kicked = false;
-                connScreen.Visible = "off";
-                setStatus(statusLbl, "Pico connected on " + picoPort, C.glow);
+                set(screens(:,4), "Visible", "off");
+                set(statusLbl, "Text", "Pico connected on " + picoPort, "FontColor", C.glow);
                 fprintf("Connected to Pico on %s\n", picoPort);
             else
-                connScreen.Visible = "on";
-                connHint.Text = "Searching... (" + string(datetime("now", "Format", "HH:mm:ss")) + ")";
-                setStatus(statusLbl, "Searching for Pico...", C.gold);
+                set(hints(:,4), "Text", "Searching... (" + ...
+                    string(datetime("now", "Format", "HH:mm:ss")) + ")");
+                set(statusLbl, "Text", "Searching for Pico...", "FontColor", C.gold);
             end
         end
         drawnow;
@@ -175,18 +331,16 @@ while isvalid(fig)
         continue
     end
 
-    % ---------- Connected ----------
+    % Connected
     try
-        % Get vibration values from slider component
-        vibrationThreshold = sld.Value(1);   % left handle
-        vibrationMax = sld.Value(2);         % right handle
+        vibrationThreshold = sld.Value(1);
+        vibrationMax = sld.Value(2);
 
-        % Read every message waiting from the pico - no flush, or we would
-        % throw away the button and beam messages that only get sent once
+        % Read all messages
         while PicoObj.NumBytesAvailable > 0
             PicoMsg = readline(PicoObj);
             if isempty(PicoMsg)
-                break   % timed out on a partial line, grab it next loop
+                break   % partial line
             end
             PicoMsg = strtrim(PicoMsg);
             if PicoMsg == ""
@@ -195,12 +349,11 @@ while isvalid(fig)
             lastData = tic;
             if kicked
                 kicked = false;
-                setStatus(statusLbl, "Pico connected on " + picoPort, C.glow);
+                set(statusLbl, "Text", "Pico connected on " + picoPort, "FontColor", C.glow);
             end
 
-            % Check if we recognize the message
             if startsWith(PicoMsg, 'S1:')
-                % Get gauge position from message
+                % Accelerometer
                 vibes = sscanf(PicoMsg, 'S1:%f');
                 if isempty(vibes)
                     continue
@@ -213,46 +366,38 @@ while isvalid(fig)
                     Brightness = int32(((vibes - vibrationThreshold) / (vibrationMax - vibrationThreshold)) * 100.0);
                 end
 
-                % Any vibration above the threshold counts as activity
                 if Brightness > 0
                     lastActivity = tic;
                 end
 
-                % Set gauge
                 history = [history(2:end) double(Brightness)];
-                g.Value = mean(history);
+                gaugeVal = mean(history);
+                set(gauges, "Value", gaugeVal);
+                vibLbl.Text = sprintf("Accelerometer: %.2f", vibes);
 
-                % Too much vibration while playing means you lose
-                if gameState == "playing" && g.Value >= 100
+                % Too much vibration
+                if gameState == "playing" && gaugeVal >= 100
                     gameState = "lose";
-                    loseScreen.Visible = "on";
                 end
 
             elseif startsWith(PicoMsg, 'B1:')
-                % Start button was pressed
+                % Start button
                 btnPresses = btnPresses + 1;
                 btnLbl.Text = sprintf("Start Button: pressed (%d)", btnPresses);
                 lastActivity = tic;
 
-                % Button starts the game from the start screen (only if a part
-                % is on the start beam), and goes back to the start screen from
-                % the win or lose screen
                 if gameState == "start" && startBeamOn
                     gameState = "playing";
                     history = zeros(1, 5);
-                    startScreen.Visible = "off";
                 elseif gameState == "win" || gameState == "lose"
                     gameState = "start";
-                    winScreen.Visible = "off";
-                    loseScreen.Visible = "off";
-                    startScreen.Visible = "on";
                 end
 
             elseif startsWith(PicoMsg, 'B2:')
-                % Start beam changed - 1 = part on the beam, 0 = clear
+                % Start beam
                 beamVal = sscanf(PicoMsg, 'B2:%d');
                 if ~isscalar(beamVal)
-                    continue    % garbled message - keep the last known state
+                    continue    % garbled message
                 end
                 startBeamOn = beamVal == 1;
                 lastActivity = tic;
@@ -265,20 +410,17 @@ while isvalid(fig)
                 end
 
             elseif startsWith(PicoMsg, 'B3:')
-                % End beam changed - 1 = part on the beam, 0 = clear
+                % End beam
                 beamVal = sscanf(PicoMsg, 'B3:%d');
                 if ~isscalar(beamVal)
-                    continue    % garbled message - keep the last known state
+                    continue    % garbled message
                 end
                 lastActivity = tic;
                 if beamVal == 1
                     endLamp.Color = C.coral;
                     endLbl.Text = "End Beam: part on";
-
-                    % Part made it to the end while playing means you win
                     if gameState == "playing"
                         gameState = "win";
-                        winScreen.Visible = "on";
                     end
                 else
                     endLamp.Color = C.glow;
@@ -286,30 +428,26 @@ while isvalid(fig)
                 end
 
             elseif startsWith(PicoMsg, 'E1:')
-                % Pico reported a sensor problem (but is still running)
-                setStatus(statusLbl, "Pico: " + extractAfter(PicoMsg, 3), C.coral);
+                % Sensor error
+                set(statusLbl, "Text", "Pico: " + extractAfter(PicoMsg, 3), "FontColor", C.coral);
 
             else
-                % Anything else (tracebacks, boot messages) goes to the
-                % command window so you can see why the Pico crashed
                 fprintf("[Pico] %s\n", PicoMsg);
             end
         end
 
-        % ---------- Pico went quiet ----------
-        % The Pico normally talks ~100 times a second, so silence means the
-        % script crashed. Ctrl-C Ctrl-D soft reboots it, which re-runs main.py.
+        % Pico went quiet
         if ~kicked && toc(lastData) > NO_DATA_KICK
             kicked = true;
             fprintf("Pico went quiet - sending soft reset\n");
-            setStatus(statusLbl, "Pico went quiet - restarting it...", C.gold);
+            set(statusLbl, "Text", "Pico went quiet - restarting it...", "FontColor", C.gold);
             write(PicoObj, uint8([3 3 4]), "uint8");
         end
         if toc(lastData) > NO_DATA_DROP
             error("Pico:silent", "No data from the Pico for %d seconds", NO_DATA_DROP);
         end
 
-        % Port disappeared (unplugged / USB reset)
+        % Port unplugged
         if toc(lastPortCheck) > 1
             lastPortCheck = tic;
             if ~any(serialportlist("all") == picoPort)
@@ -317,15 +455,20 @@ while isvalid(fig)
             end
         end
 
-        % Send the brightness back to the Pico (only while it is talking,
-        % so we don't spam the REPL if the script has crashed)
+        % LEDs only while playing
+        if gameState == "playing"
+            ledVal = Brightness;
+        else
+            ledVal = 0;
+        end
+        brtLbl.Text = sprintf("LED Brightness: %d", ledVal);
         if toc(lastData) < 1
-            writeline(PicoObj, sprintf('a%d', Brightness));
+            writeline(PicoObj, sprintf('a%d', ledVal));
         end
 
     catch err
-        % Lost the Pico - close the port and go back to searching
-        if ~isvalid(fig)
+        % Lost the Pico
+        if ~isvalid(fig) || ~isvalid(adminFig)
             break
         end
         fprintf("Lost connection: %s\n", err.message);
@@ -336,48 +479,34 @@ while isvalid(fig)
         PicoObj = [];
         lastRetry = tic;
 
-        % Reset everything - the Pico re-sends its beam states when it boots
+        % Reset everything
         Brightness = 0;
         history = zeros(1, 5);
-        g.Value = 0;
+        set(gauges, "Value", 0);
+        brtLbl.Text = "LED Brightness: 0";
+        vibLbl.Text = "Accelerometer: --";
         gameState = "start";
-        winScreen.Visible = "off";
-        loseScreen.Visible = "off";
-        startScreen.Visible = "on";
-        connScreen.Visible = "on";
-        setStatus(statusLbl, "Pico lost - searching...", C.coral);
+        set(hints(:,4), "Text", "Searching...");
+        set(statusLbl, "Text", "Pico lost - searching...", "FontColor", C.coral);
         continue
     end
 
-    % Window was closed while we were reading - stop here
-    if ~isvalid(fig)
+    if ~isvalid(fig) || ~isvalid(adminFig)
         break
     end
 
-    % No activity for IDLE_TIMEOUT seconds - go back to the start screen
+    % Idle reset
     if gameState ~= "start" && toc(lastActivity) > IDLE_TIMEOUT
         gameState = "start";
         history = zeros(1, 5);
-        winScreen.Visible = "off";
-        loseScreen.Visible = "off";
-        startScreen.Visible = "on";
     end
 
-    % Only show "Move to start" if the part isn't on the start beam
-    if startBeamOn
-        hintVis = "off";
-    else
-        hintVis = "on";
-    end
-    startHint.Visible = hintVis;
-    winHint.Visible = hintVis;
-    loseHint.Visible = hintVis;
-
-    drawnow;      % Update the interface
-    pause(0.05);  % Slow down so we can read it (also keeps the Pico's buffer from flooding)
+    drawnow;
+    pause(0.05);
 end
 
-% Window closed - turn the LEDs off and hand the port back
+%% Cleanup
+delete([fig adminFig]);
 if ~isempty(PicoObj)
     try
         writeline(PicoObj, "a0");
@@ -386,89 +515,3 @@ if ~isempty(PicoObj)
     delete(PicoObj);
 end
 clear PicoObj;
-
-
-%% ===================== Helper functions =====================
-
-function [obj, port] = connectPico(preferred, pinned, baud)
-% Try to open the Pico's serial port. Returns [] if it isn't there yet.
-obj = [];
-port = "";
-ports = serialportlist("available");
-if isempty(ports)
-    return
-end
-if preferred ~= "" && any(ports == preferred)
-    port = preferred;
-elseif pinned
-    return              % pinned port isn't back yet
-else
-    port = ports(end);
-end
-try
-    obj = serialport(port, baud, "Timeout", 0.5);
-    configureTerminator(obj, "LF");
-    flush(obj);
-catch
-    obj = [];           % port exists but isn't ready yet (Pico still booting)
-    port = "";
-end
-end
-
-function setStatus(lbl, txt, col)
-lbl.Text = txt;
-lbl.FontColor = col;
-end
-
-function [pnl, ttl, sub, hint] = makeScreen(root, bgCol, titleTxt, titleCol, subTxt, C)
-% Full-window overlay: solid colored background with big title text on top
-pnl = uipanel(root, "BorderType", "none", "BackgroundColor", bgCol);
-pnl.Layout.Row = [1 10];
-pnl.Layout.Column = [1 5];
-gl = uigridlayout(pnl, [5 1], "RowHeight", {'1x', '0.9x', '0.18x', '0.18x', '0.6x'}, ...
-    "ColumnWidth", {'1x'}, "Padding", 0, "RowSpacing", 0, ...
-    "BackgroundColor", bgCol);
-ttl = uilabel(gl, "Text", titleTxt, "FontSize", 80, "FontWeight", "bold", ...
-    "FontColor", titleCol, "HorizontalAlignment", "center", ...
-    "VerticalAlignment", "bottom");
-ttl.Layout.Row = 2;
-sub = uilabel(gl, "Text", subTxt, "FontSize", 22, "FontColor", C.text, ...
-    "HorizontalAlignment", "center");
-sub.Layout.Row = 3;
-hint = uilabel(gl, "Text", "Move to start", "FontSize", 24, ...
-    "FontWeight", "bold", "FontColor", C.gold, "HorizontalAlignment", "center");
-hint.Layout.Row = 4;
-end
-
-function scaleFonts(fig, bigLbls, subLbls, titleLbl)
-% Grow/shrink text with the window height
-h = fig.Position(4);
-for k = 1:numel(bigLbls)
-    bigLbls(k).FontSize = max(48, round(h * 0.15));
-end
-for k = 1:numel(subLbls)
-    subLbls(k).FontSize = max(18, round(h * 0.035));
-end
-titleLbl.FontSize = max(24, round(h * 0.045));
-end
-
-function toggleFullscreen(fig, btn)
-if fig.WindowState == "fullscreen"
-    fig.WindowState = "normal";
-    btn.Text = "Fullscreen (F11)";
-else
-    fig.WindowState = "fullscreen";
-    btn.Text = "Exit fullscreen (Esc)";
-end
-end
-
-function onKey(fig, evt, btn)
-switch evt.Key
-    case 'f11'
-        toggleFullscreen(fig, btn);
-    case 'escape'
-        if fig.WindowState == "fullscreen"
-            toggleFullscreen(fig, btn);
-        end
-end
-end
