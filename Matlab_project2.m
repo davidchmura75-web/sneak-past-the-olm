@@ -3,7 +3,18 @@
 % 11/2/26
 % Vibration Level Detection
 
-clear; clc; close all;
+function Matlab_project2
+% Function (not a script) so the game loop can run on a timer
+% with nested functions sharing the variables below
+
+clc; close all;
+
+% Stop a game left running from an earlier run
+oldTimers = timerfindall("Tag", "OlmCavernLoop");
+if ~isempty(oldTimers)
+    stop(oldTimers);
+    delete(oldTimers(isvalid(oldTimers)));
+end
 
 %% Settings
 PICO_PORT = "";     % "" = auto pick
@@ -137,10 +148,6 @@ fsBtn.ButtonPushedFcn = @(~, ~) set(fsBtn, "UserData", "f11");
 fig.WindowKeyPressFcn = @(~, evt) set(fsBtn, "UserData", evt.Key);
 adminFig.WindowKeyPressFcn = @(~, evt) set(fsBtn, "UserData", evt.Key);
 
-% Close both together
-fig.CloseRequestFcn = @(~, ~) delete([fig adminFig]);
-adminFig.CloseRequestFcn = @(~, ~) delete([fig adminFig]);
-
 %% Game page (built twice)
 % 1 = main page, 2 = admin preview
 parents = {fig, previewPnl};
@@ -244,274 +251,323 @@ lastPortCheck = tic;
 kicked = false;
 firstTry = true;
 
-%% Main loop
-while isvalid(fig) && isvalid(adminFig)
+%% Game loop
+% Runs on a timer so MATLAB stays free between ticks
+% (a while loop keeps MATLAB busy and VS Code shuts it down)
+gameTimer = timer("Tag", "OlmCavernLoop", ...
+    "ExecutionMode", "fixedSpacing", "Period", 0.05, ...
+    "BusyMode", "drop", ...
+    "TimerFcn", @(~, ~) safeTick(), ...
+    "StopFcn", @(~, ~) shutdown());
 
-    % Fullscreen request
-    key = "";
-    if ~isempty(fsBtn.UserData)
-        key = string(fsBtn.UserData);
-        fsBtn.UserData = [];
-    end
-    if key == "f11" || (key == "escape" && fig.WindowState == "fullscreen")
-        if fig.WindowState == "fullscreen"
-            fig.WindowState = "normal";
-            fsBtn.Text = "Main page fullscreen (F11)";
-        else
-            fig.WindowState = "fullscreen";
-            fsBtn.Text = "Exit main fullscreen (Esc)";
+% Closing either window stops the game
+fig.CloseRequestFcn = @(~, ~) stopGame();
+adminFig.CloseRequestFcn = @(~, ~) stopGame();
+
+start(gameTimer);
+
+    %% One tick of the game
+    function safeTick()
+        try
+            gameTick();
+        catch tickErr
+            % Keep the game running if something unexpected goes wrong
+            fprintf("Game tick error: %s\n", tickErr.message);
         end
     end
 
-    % Text scales with size
-    heights = [fig.Position(4) previewPnl.Position(4)];
-    for k = 1:2
-        if heights(k) ~= lastHeights(k)
-            h = heights(k);
-            set(bigLbls(k,:), "FontSize", max(16, round(h * 0.15)));
-            set([subLbls(k,:) hints(k,:)], "FontSize", max(8, round(h * 0.035)));
-            titles(k).FontSize = max(10, round(h * 0.045));
+    function gameTick()
+        if ~isvalid(fig) || ~isvalid(adminFig)
+            stopGame();
+            return
         end
-    end
-    lastHeights = heights;
 
-    % Show screen for state
-    set(screens(:,1), "Visible", gameState == "start");
-    set(screens(:,2), "Visible", gameState == "win");
-    set(screens(:,3), "Visible", gameState == "lose");
-    set(screens(:,4), "Visible", isempty(PicoObj));
-    set(hints(:,1:3), "Visible", ~startBeamOn);
-
-    % Admin readouts
-    stateLbl.Text = "Game State: " + gameState;
-    idleLbl.Text = sprintf("Idle: %.0f s (resets at %d s)", toc(lastActivity), IDLE_TIMEOUT);
-
-    % Not connected
-    if isempty(PicoObj)
-        if firstTry || toc(lastRetry) > 1
-            firstTry = false;
-            lastRetry = tic;
-
-            % Pick a port
-            ports = serialportlist("available");
-            tryPort = "";
-            if any(ports == picoPort)
-                tryPort = picoPort;
-            elseif ~pinned && ~isempty(ports)
-                tryPort = ports(end);
+        % Fullscreen request
+        key = "";
+        if ~isempty(fsBtn.UserData)
+            key = string(fsBtn.UserData);
+            fsBtn.UserData = [];
+        end
+        if key == "f11" || (key == "escape" && fig.WindowState == "fullscreen")
+            if fig.WindowState == "fullscreen"
+                fig.WindowState = "normal";
+                fsBtn.Text = "Main page fullscreen (F11)";
+            else
+                fig.WindowState = "fullscreen";
+                fsBtn.Text = "Exit main fullscreen (Esc)";
             end
+        end
 
-            % Try opening it
-            if tryPort ~= ""
-                try
-                    PicoObj = serialport(tryPort, BAUD, "Timeout", 0.5);
-                    configureTerminator(PicoObj, "LF");
-                    flush(PicoObj);
-                catch
-                    PicoObj = [];   % still booting
+        % Text scales with size
+        heights = [fig.Position(4) previewPnl.Position(4)];
+        for n = 1:2
+            if heights(n) ~= lastHeights(n)
+                h = heights(n);
+                set(bigLbls(n,:), "FontSize", max(16, round(h * 0.15)));
+                set([subLbls(n,:) hints(n,:)], "FontSize", max(8, round(h * 0.035)));
+                titles(n).FontSize = max(10, round(h * 0.045));
+            end
+        end
+        lastHeights = heights;
+
+        % Show screen for state
+        set(screens(:,1), "Visible", gameState == "start");
+        set(screens(:,2), "Visible", gameState == "win");
+        set(screens(:,3), "Visible", gameState == "lose");
+        set(screens(:,4), "Visible", isempty(PicoObj));
+        set(hints(:,1:3), "Visible", ~startBeamOn);
+
+        % Admin readouts
+        stateLbl.Text = "Game State: " + gameState;
+        if gameState == "win" || gameState == "lose"
+            idleLbl.Text = sprintf("Idle: %.0f s (resets at %d s)", toc(lastActivity), IDLE_TIMEOUT);
+        else
+            idleLbl.Text = "Idle: -- (only on win/lose)";
+        end
+
+        % Not connected
+        if isempty(PicoObj)
+            if firstTry || toc(lastRetry) > 1
+                firstTry = false;
+                lastRetry = tic;
+
+                % Pick a port
+                ports = serialportlist("available");
+                tryPort = "";
+                if any(ports == picoPort)
+                    tryPort = picoPort;
+                elseif ~pinned && ~isempty(ports)
+                    tryPort = ports(end);
+                end
+
+                % Try opening it
+                if tryPort ~= ""
+                    try
+                        PicoObj = serialport(tryPort, BAUD, "Timeout", 0.5);
+                        configureTerminator(PicoObj, "LF");
+                        flush(PicoObj);
+                    catch
+                        PicoObj = [];   % still booting
+                    end
+                end
+
+                if ~isempty(PicoObj)
+                    picoPort = tryPort;
+                    lastData = tic;
+                    lastPortCheck = tic;
+                    kicked = false;
+                    set(screens(:,4), "Visible", "off");
+                    set(statusLbl, "Text", "Pico connected on " + picoPort, "FontColor", C.glow);
+                    fprintf("Connected to Pico on %s\n", picoPort);
+                else
+                    set(hints(:,4), "Text", "Searching... (" + ...
+                        string(datetime("now", "Format", "HH:mm:ss")) + ")");
+                    set(statusLbl, "Text", "Searching for Pico...", "FontColor", C.gold);
                 end
             end
-
-            if ~isempty(PicoObj)
-                picoPort = tryPort;
-                lastData = tic;
-                lastPortCheck = tic;
-                kicked = false;
-                set(screens(:,4), "Visible", "off");
-                set(statusLbl, "Text", "Pico connected on " + picoPort, "FontColor", C.glow);
-                fprintf("Connected to Pico on %s\n", picoPort);
-            else
-                set(hints(:,4), "Text", "Searching... (" + ...
-                    string(datetime("now", "Format", "HH:mm:ss")) + ")");
-                set(statusLbl, "Text", "Searching for Pico...", "FontColor", C.gold);
-            end
+            drawnow;
+            return
         end
-        drawnow;
-        pause(0.1);
-        continue
-    end
 
-    % Connected
-    try
-        vibrationThreshold = sld.Value(1);
-        vibrationMax = sld.Value(2);
+        % Connected
+        try
+            vibrationThreshold = sld.Value(1);
+            vibrationMax = sld.Value(2);
 
-        % Read all messages
-        while PicoObj.NumBytesAvailable > 0
-            PicoMsg = readline(PicoObj);
-            if isempty(PicoMsg)
-                break   % partial line
-            end
-            PicoMsg = strtrim(PicoMsg);
-            if PicoMsg == ""
-                continue
-            end
-            lastData = tic;
-            if kicked
-                kicked = false;
-                set(statusLbl, "Text", "Pico connected on " + picoPort, "FontColor", C.glow);
-            end
-
-            if startsWith(PicoMsg, 'S1:')
-                % Accelerometer
-                vibes = sscanf(PicoMsg, 'S1:%f');
-                if isempty(vibes)
+            % Read all messages
+            while PicoObj.NumBytesAvailable > 0
+                PicoMsg = readline(PicoObj);
+                if isempty(PicoMsg)
+                    break   % partial line
+                end
+                PicoMsg = strtrim(PicoMsg);
+                if PicoMsg == ""
                     continue
                 end
-                if vibes < vibrationThreshold
-                    Brightness = 0;
-                elseif vibes > vibrationMax
-                    Brightness = int32(100.0);
-                else
-                    Brightness = int32(((vibes - vibrationThreshold) / (vibrationMax - vibrationThreshold)) * 100.0);
+                lastData = tic;
+                if kicked
+                    kicked = false;
+                    set(statusLbl, "Text", "Pico connected on " + picoPort, "FontColor", C.glow);
                 end
 
-                if Brightness > 0
-                    lastActivity = tic;
-                end
-
-                history = [history(2:end) double(Brightness)];
-                gaugeVal = mean(history);
-                set(gauges, "Value", gaugeVal);
-                vibLbl.Text = sprintf("Accelerometer: %.2f", vibes);
-
-                % Too much vibration
-                if gameState == "playing" && gaugeVal >= 100
-                    gameState = "lose";
-                end
-
-            elseif startsWith(PicoMsg, 'B1:')
-                % Start button
-                btnPresses = btnPresses + 1;
-                btnLbl.Text = sprintf("Start Button: pressed (%d)", btnPresses);
-                lastActivity = tic;
-
-                if gameState == "start" && startBeamOn
-                    gameState = "playing";
-                    history = zeros(1, 5);
-                elseif gameState == "win" || gameState == "lose"
-                    gameState = "start";
-                end
-
-            elseif startsWith(PicoMsg, 'B2:')
-                % Start beam
-                beamVal = sscanf(PicoMsg, 'B2:%d');
-                if ~isscalar(beamVal)
-                    continue    % garbled message
-                end
-                startBeamOn = beamVal == 1;
-                lastActivity = tic;
-                if startBeamOn
-                    startLamp.Color = C.coral;
-                    startLbl.Text = "Start Beam: part on";
-                else
-                    startLamp.Color = C.glow;
-                    startLbl.Text = "Start Beam: clear";
-                end
-
-            elseif startsWith(PicoMsg, 'B3:')
-                % End beam
-                beamVal = sscanf(PicoMsg, 'B3:%d');
-                if ~isscalar(beamVal)
-                    continue    % garbled message
-                end
-                lastActivity = tic;
-                if beamVal == 1
-                    endLamp.Color = C.coral;
-                    endLbl.Text = "End Beam: part on";
-                    if gameState == "playing"
-                        gameState = "win";
+                if startsWith(PicoMsg, 'S1:')
+                    % Accelerometer
+                    vibes = sscanf(PicoMsg, 'S1:%f');
+                    if isempty(vibes)
+                        continue
                     end
+                    if vibes < vibrationThreshold
+                        Brightness = 0;
+                    elseif vibes > vibrationMax
+                        Brightness = int32(100.0);
+                    else
+                        Brightness = int32(((vibes - vibrationThreshold) / (vibrationMax - vibrationThreshold)) * 100.0);
+                    end
+
+                    if Brightness > 0
+                        lastActivity = tic;
+                    end
+
+                    history = [history(2:end) double(Brightness)];
+                    gaugeVal = mean(history);
+                    set(gauges, "Value", gaugeVal);
+                    vibLbl.Text = sprintf("Accelerometer: %.2f", vibes);
+
+                    % Too much vibration
+                    if gameState == "playing" && gaugeVal >= 100
+                        gameState = "lose";
+                        lastActivity = tic;   % start idle countdown on lose screen
+                    end
+
+                elseif startsWith(PicoMsg, 'B1:')
+                    % Start button
+                    btnPresses = btnPresses + 1;
+                    btnLbl.Text = sprintf("Start Button: pressed (%d)", btnPresses);
+                    lastActivity = tic;
+
+                    if gameState == "start" && startBeamOn
+                        gameState = "playing";
+                        history = zeros(1, 5);
+                    elseif gameState == "win" || gameState == "lose"
+                        gameState = "start";
+                    end
+
+                elseif startsWith(PicoMsg, 'B2:')
+                    % Start beam
+                    beamVal = sscanf(PicoMsg, 'B2:%d');
+                    if ~isscalar(beamVal)
+                        continue    % garbled message
+                    end
+                    startBeamOn = beamVal == 1;
+                    lastActivity = tic;
+                    if startBeamOn
+                        startLamp.Color = C.coral;
+                        startLbl.Text = "Start Beam: part on";
+                    else
+                        startLamp.Color = C.glow;
+                        startLbl.Text = "Start Beam: clear";
+                    end
+
+                elseif startsWith(PicoMsg, 'B3:')
+                    % End beam
+                    beamVal = sscanf(PicoMsg, 'B3:%d');
+                    if ~isscalar(beamVal)
+                        continue    % garbled message
+                    end
+                    lastActivity = tic;
+                    if beamVal == 1
+                        endLamp.Color = C.coral;
+                        endLbl.Text = "End Beam: part on";
+                        if gameState == "playing"
+                            gameState = "win";
+                        end
+                    else
+                        endLamp.Color = C.glow;
+                        endLbl.Text = "End Beam: clear";
+                    end
+
+                elseif startsWith(PicoMsg, 'E1:')
+                    % Sensor error
+                    set(statusLbl, "Text", "Pico: " + extractAfter(PicoMsg, 3), "FontColor", C.coral);
+
                 else
-                    endLamp.Color = C.glow;
-                    endLbl.Text = "End Beam: clear";
+                    fprintf("[Pico] %s\n", PicoMsg);
                 end
+            end
 
-            elseif startsWith(PicoMsg, 'E1:')
-                % Sensor error
-                set(statusLbl, "Text", "Pico: " + extractAfter(PicoMsg, 3), "FontColor", C.coral);
+            % Pico went quiet
+            if ~kicked && toc(lastData) > NO_DATA_KICK
+                kicked = true;
+                fprintf("Pico went quiet - sending soft reset\n");
+                set(statusLbl, "Text", "Pico went quiet - restarting it...", "FontColor", C.gold);
+                write(PicoObj, uint8([3 3 4]), "uint8");
+            end
+            if toc(lastData) > NO_DATA_DROP
+                error("Pico:silent", "No data from the Pico for %d seconds", NO_DATA_DROP);
+            end
 
+            % Port unplugged
+            if toc(lastPortCheck) > 1
+                lastPortCheck = tic;
+                if ~any(serialportlist("all") == picoPort)
+                    error("Pico:gone", "%s disappeared", picoPort);
+                end
+            end
+
+            % LEDs only while playing
+            if gameState == "playing"
+                ledVal = Brightness;
             else
-                fprintf("[Pico] %s\n", PicoMsg);
+                ledVal = 0;
             end
-        end
-
-        % Pico went quiet
-        if ~kicked && toc(lastData) > NO_DATA_KICK
-            kicked = true;
-            fprintf("Pico went quiet - sending soft reset\n");
-            set(statusLbl, "Text", "Pico went quiet - restarting it...", "FontColor", C.gold);
-            write(PicoObj, uint8([3 3 4]), "uint8");
-        end
-        if toc(lastData) > NO_DATA_DROP
-            error("Pico:silent", "No data from the Pico for %d seconds", NO_DATA_DROP);
-        end
-
-        % Port unplugged
-        if toc(lastPortCheck) > 1
-            lastPortCheck = tic;
-            if ~any(serialportlist("all") == picoPort)
-                error("Pico:gone", "%s disappeared", picoPort);
+            brtLbl.Text = sprintf("LED Brightness: %d", ledVal);
+            if toc(lastData) < 1
+                writeline(PicoObj, sprintf('a%d', ledVal));
             end
+
+        catch err
+            % Lost the Pico
+            if ~isvalid(fig) || ~isvalid(adminFig)
+                stopGame();
+                return
+            end
+            fprintf("Lost connection: %s\n", err.message);
+            try
+                delete(PicoObj);
+            catch
+            end
+            PicoObj = [];
+            lastRetry = tic;
+
+            % Reset everything
+            Brightness = 0;
+            history = zeros(1, 5);
+            set(gauges, "Value", 0);
+            brtLbl.Text = "LED Brightness: 0";
+            vibLbl.Text = "Accelerometer: --";
+            gameState = "start";
+            set(hints(:,4), "Text", "Searching...");
+            set(statusLbl, "Text", "Pico lost - searching...", "FontColor", C.coral);
+            return
         end
 
-        % LEDs only while playing
-        if gameState == "playing"
-            ledVal = Brightness;
+        % Idle reset
+        if (gameState == "win" || gameState == "lose") && toc(lastActivity) > IDLE_TIMEOUT
+            gameState = "start";
+            history = zeros(1, 5);
+        end
+
+        drawnow;
+    end
+
+    %% Stop the timer (its StopFcn does the cleanup)
+    function stopGame()
+        if isvalid(gameTimer) && gameTimer.Running == "on"
+            stop(gameTimer);
         else
-            ledVal = 0;
+            shutdown();
         end
-        brtLbl.Text = sprintf("LED Brightness: %d", ledVal);
-        if toc(lastData) < 1
-            writeline(PicoObj, sprintf('a%d', ledVal));
-        end
+    end
 
-    catch err
-        % Lost the Pico
-        if ~isvalid(fig) || ~isvalid(adminFig)
-            break
-        end
-        fprintf("Lost connection: %s\n", err.message);
-        try
-            delete(PicoObj);
-        catch
+    %% Cleanup
+    function shutdown()
+        if ~isempty(PicoObj)
+            try
+                writeline(PicoObj, "a0");
+            catch
+            end
+            try
+                delete(PicoObj);
+            catch
+            end
         end
         PicoObj = [];
-        lastRetry = tic;
-
-        % Reset everything
-        Brightness = 0;
-        history = zeros(1, 5);
-        set(gauges, "Value", 0);
-        brtLbl.Text = "LED Brightness: 0";
-        vibLbl.Text = "Accelerometer: --";
-        gameState = "start";
-        set(hints(:,4), "Text", "Searching...");
-        set(statusLbl, "Text", "Pico lost - searching...", "FontColor", C.coral);
-        continue
+        figs = [fig adminFig];
+        delete(figs(isvalid(figs)));
+        if isvalid(gameTimer)
+            delete(gameTimer);
+        end
+        fprintf("Olm Cavern closed\n");
     end
 
-    if ~isvalid(fig) || ~isvalid(adminFig)
-        break
-    end
-
-    % Idle reset
-    if gameState ~= "start" && toc(lastActivity) > IDLE_TIMEOUT
-        gameState = "start";
-        history = zeros(1, 5);
-    end
-
-    drawnow;
-    pause(0.05);
 end
-
-%% Cleanup
-delete([fig adminFig]);
-if ~isempty(PicoObj)
-    try
-        writeline(PicoObj, "a0");
-    catch
-    end
-    delete(PicoObj);
-end
-clear PicoObj;
