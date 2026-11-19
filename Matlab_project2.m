@@ -156,6 +156,7 @@ parents = {fig, previewPnl};
 scrBg    = [0.02 0.16 0.24; 0.02 0.20 0.16; 0.22 0.04 0.09; 0.07 0.06 0.20];
 scrTitle = ["Start", "Win", "Lose", "Pico lost"];
 scrColor = [C.aqua; C.glow; C.coral; C.gold];
+scrImg   = ["olm_start.png", "confused_olm.png", "alert_olm.png", "confused_olm.png"];
 scrSub   = ["Press the start button to dive into the cavern", ...
             "You made it through the cave without waking the olm up!", ...
             "Too much vibrations - the olm woke up...", ...
@@ -195,21 +196,14 @@ for k = 1:2
         pnl = uipanel(grid, "BorderType", "none", "BackgroundColor", scrBg(s,:));
         pnl.Layout.Row = [1 4]; pnl.Layout.Column = [1 4];
 
-        if s == 1
-            % Start page olm
-            rows = {'0.35x', '1.2x', '0.55x', '0.15x', '0.15x', '0.1x'};
-            ttlRow = 3;
-        else
-            rows = {'1x', '0.9x', '0.18x', '0.18x', '0.6x'};
-            ttlRow = 2;
-        end
+        % Every page has an olm above the title
+        rows = {'0.35x', '1.2x', '0.55x', '0.15x', '0.15x', '0.1x'};
+        ttlRow = 3;
         gl = uigridlayout(pnl, [numel(rows) 1], "RowHeight", rows, ...
             "ColumnWidth", {'1x'}, "Padding", 0, "RowSpacing", 0, ...
             "BackgroundColor", scrBg(s,:));
-        if s == 1
-            olm = uiimage(gl, "ImageSource", "olm_start.png", "ScaleMethod", "fit");
-            olm.Layout.Row = 2;
-        end
+        olm = uiimage(gl, "ImageSource", scrImg(s), "ScaleMethod", "fit");
+        olm.Layout.Row = 2;
 
         bigLbls(k,s) = uilabel(gl, "Text", scrTitle(s), "FontName", FONT, "FontSize", 80, ...
             "FontWeight", "bold", "FontColor", scrColor(s,:), ...
@@ -404,9 +398,6 @@ start(gameTimer);
                         Brightness = int32(((vibes - vibrationThreshold) / (vibrationMax - vibrationThreshold)) * 100.0);
                     end
 
-                    if Brightness > 0
-                        lastActivity = tic;
-                    end
 
                     history = [history(2:end) double(Brightness)];
                     gaugeVal = mean(history);
@@ -439,7 +430,6 @@ start(gameTimer);
                         continue    % garbled message
                     end
                     startBeamOn = beamVal == 1;
-                    lastActivity = tic;
                     if startBeamOn
                         startLamp.Color = C.coral;
                         startLbl.Text = "Start Beam: part on";
@@ -454,12 +444,12 @@ start(gameTimer);
                     if ~isscalar(beamVal)
                         continue    % garbled message
                     end
-                    lastActivity = tic;
                     if beamVal == 1
                         endLamp.Color = C.coral;
                         endLbl.Text = "End Beam: part on";
                         if gameState == "playing"
                             gameState = "win";
+                            lastActivity = tic;   % start idle countdown on win screen
                         end
                     else
                         endLamp.Color = C.glow;
