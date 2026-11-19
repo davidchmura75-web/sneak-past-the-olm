@@ -4,8 +4,6 @@
 % Vibration Level Detection
 
 function Matlab_project2
-% Function (not a script) so the game loop can run on a timer
-% with nested functions sharing the variables below
 
 clc; close all;
 
@@ -17,11 +15,14 @@ if ~isempty(oldTimers)
 end
 
 %% Settings
-PICO_PORT = "";     % "" = auto pick
+PICO_PORT = "";
 BAUD = 9600;
-IDLE_TIMEOUT = 10;  % seconds until reset
+IDLE_TIMEOUT = 20;  % seconds until reset
 NO_DATA_KICK = 3;   % seconds until soft reset
 NO_DATA_DROP = 8;   % seconds until reconnect
+ROUND_LOG = fullfile(fileparts(mfilename("fullpath")), "round_data.txt");  % one line per round
+LEADERBOARD = fullfile(fileparts(mfilename("fullpath")), "leaderboard.txt"); % every win, fastest first
+LB_SHOW = 5;        % how many places to show on the win screen
 
 %% Colors
 C.abyss = [0.02 0.09 0.17];
@@ -33,7 +34,7 @@ C.coral = [1.00 0.42 0.45];
 C.gold  = [1.00 0.80 0.35];
 
 %% Font
-% Oh Whale (fonts/OhWhale-oYZq.ttf) - installed for this user if missing
+% Oh Whale (fonts/OhWhale-oYZq.ttf)
 FONT = "Oh Whale";
 if ~any(strcmp(listfonts, FONT))
     fontSrc = fullfile(fileparts(mfilename("fullpath")), "fonts", "OhWhale-oYZq.ttf");
@@ -84,8 +85,8 @@ previewPnl.Layout.Row = 2; previewPnl.Layout.Column = 1;
 sensPnl = uipanel(aRoot, "Title", "Sensors", ...
     "BackgroundColor", C.card, "ForegroundColor", C.text, "FontWeight", "bold");
 sensPnl.Layout.Row = 2; sensPnl.Layout.Column = 2;
-sg = uigridlayout(sensPnl, [8 2], ...
-    "RowHeight", {32, 32, 32, 32, 32, 32, 32, '1x'}, ...
+sg = uigridlayout(sensPnl, [9 2], ...
+    "RowHeight", {32, 32, 32, 32, 32, 32, 32, 32, '1x'}, ...
     "ColumnWidth", {28, '1x'}, "Padding", 12, "RowSpacing", 8, ...
     "BackgroundColor", C.card);
 
@@ -121,6 +122,9 @@ stateLbl.Layout.Row = 6; stateLbl.Layout.Column = [1 2];
 idleLbl = uilabel(sg, "Text", "Idle: 0 s", ...
     "FontSize", 16, "FontWeight", "bold", "FontColor", C.text);
 idleLbl.Layout.Row = 7; idleLbl.Layout.Column = [1 2];
+servoLbl = uilabel(sg, "Text", "Servo: --", ...
+    "FontSize", 16, "FontWeight", "bold", "FontColor", C.text);
+servoLbl.Layout.Row = 8; servoLbl.Layout.Column = [1 2];
 
 % Sensitivity slider
 sldLbl = uilabel(aRoot, "Text", "Adjust Accelerometer Sensitivity!", ...
@@ -168,6 +172,7 @@ screens = gobjects(2, 4);
 bigLbls = gobjects(2, 4);
 subLbls = gobjects(2, 4);
 hints   = gobjects(2, 4);
+lbLbls  = gobjects(2, 1);   % leaderboard on the win screen
 
 for k = 1:2
     grid = uigridlayout(parents{k}, [4 4], ...
@@ -202,8 +207,21 @@ for k = 1:2
         gl = uigridlayout(pnl, [numel(rows) 1], "RowHeight", rows, ...
             "ColumnWidth", {'1x'}, "Padding", 0, "RowSpacing", 0, ...
             "BackgroundColor", scrBg(s,:));
-        olm = uiimage(gl, "ImageSource", scrImg(s), "ScaleMethod", "fit");
-        olm.Layout.Row = 2;
+        if s == 2
+            % Win page: olm on the left, leaderboard on the right
+            winRow = uigridlayout(gl, [1 2], "ColumnWidth", {'1x', '1x'}, ...
+                "Padding", 0, "ColumnSpacing", 20, "BackgroundColor", scrBg(s,:));
+            winRow.Layout.Row = 2;
+            olm = uiimage(winRow, "ImageSource", scrImg(s), "ScaleMethod", "fit");
+            olm.Layout.Column = 1;
+            lbLbls(k) = uilabel(winRow, "Text", "", "Interpreter", "html", ...
+                "FontName", FONT, "FontSize", 22, "FontColor", C.text, ...
+                "HorizontalAlignment", "left", "VerticalAlignment", "center");
+            lbLbls(k).Layout.Column = 2;
+        else
+            olm = uiimage(gl, "ImageSource", scrImg(s), "ScaleMethod", "fit");
+            olm.Layout.Row = 2;
+        end
 
         bigLbls(k,s) = uilabel(gl, "Text", scrTitle(s), "FontName", FONT, "FontSize", 80, ...
             "FontWeight", "bold", "FontColor", scrColor(s,:), ...
@@ -227,6 +245,9 @@ lastHeights = [0 0];
 gameState = "start";    % start/playing/win/lose
 startBeamOn = false;
 lastActivity = tic;
+servoSent = -1;         % last servo angle sent to the Pico (-1 = not sent yet)
+servoConfirmed = -1;    % last servo angle the Pico reported back (-1 = unknown)
+lastServoSend = tic;
 
 vibes = 0.0;
 Brightness = 0.0;
@@ -234,6 +255,15 @@ history = zeros(1, 5);
 
 vibrationThreshold = 1.0;
 vibrationMax = 7.0;
+
+% Current round stats (reset when a round starts)
+roundTimer = tic;
+roundSum = 0;       % sum of accelerometer readings this round
+roundCount = 0;     % number of readings this round
+roundPeak = 0;      % highest accelerometer reading this round
+
+% Leaderboard (name, time, date) - loaded from leaderboard.txt
+board = loadBoard();
 
 %% Connection state
 PicoObj = [];
@@ -259,7 +289,6 @@ fig.CloseRequestFcn = @(~, ~) stopGame();
 adminFig.CloseRequestFcn = @(~, ~) stopGame();
 
 start(gameTimer);
-
     %% One tick of the game
     function safeTick()
         try
@@ -299,6 +328,7 @@ start(gameTimer);
                 h = heights(n);
                 set(bigLbls(n,:), "FontSize", max(16, round(h * 0.15)));
                 set([subLbls(n,:) hints(n,:)], "FontSize", max(8, round(h * 0.035)));
+                lbLbls(n).FontSize = max(8, round(h * 0.03));
                 titles(n).FontSize = max(10, round(h * 0.045));
             end
         end
@@ -350,6 +380,8 @@ start(gameTimer);
                     lastData = tic;
                     lastPortCheck = tic;
                     kicked = false;
+                    servoSent = -1;     % resend servo position to the new connection
+                    servoConfirmed = -1;
                     set(screens(:,4), "Visible", "off");
                     set(statusLbl, "Text", "Pico connected on " + picoPort, "FontColor", C.glow);
                     fprintf("Connected to Pico on %s\n", picoPort);
@@ -404,10 +436,18 @@ start(gameTimer);
                     set(gauges, "Value", gaugeVal);
                     vibLbl.Text = sprintf("Accelerometer: %.2f", vibes);
 
+                    % Round stats
+                    if gameState == "playing"
+                        roundSum = roundSum + vibes;
+                        roundCount = roundCount + 1;
+                        roundPeak = max(roundPeak, vibes);
+                    end
+
                     % Too much vibration
                     if gameState == "playing" && gaugeVal >= 100
                         gameState = "lose";
                         lastActivity = tic;   % start idle countdown on lose screen
+                        logRound("lose");
                     end
 
                 elseif startsWith(PicoMsg, 'B1:')
@@ -419,6 +459,10 @@ start(gameTimer);
                     if gameState == "start" && startBeamOn
                         gameState = "playing";
                         history = zeros(1, 5);
+                        roundTimer = tic;
+                        roundSum = 0;
+                        roundCount = 0;
+                        roundPeak = 0;
                     elseif gameState == "win" || gameState == "lose"
                         gameState = "start";
                     end
@@ -450,10 +494,22 @@ start(gameTimer);
                         if gameState == "playing"
                             gameState = "win";
                             lastActivity = tic;   % start idle countdown on win screen
+                            logRound("win");
+                            addWinner(toc(roundTimer));
                         end
                     else
                         endLamp.Color = C.glow;
                         endLbl.Text = "End Beam: clear";
+                    end
+
+                elseif startsWith(PicoMsg, 'V1:')
+                    % Servo moved (Pico confirms the angle it set)
+                    angleVal = sscanf(PicoMsg, 'V1:%d');
+                    if isscalar(angleVal)
+                        servoConfirmed = angleVal;
+                        servoLbl.Text = sprintf("Servo: %d%s  (Pico confirmed %s)", angleVal, char(176), ...
+                            string(datetime("now", "Format", "HH:mm:ss")));
+                        fprintf("Servo confirmed at %d deg\n", angleVal);
                     end
 
                 elseif startsWith(PicoMsg, 'E1:')
@@ -495,6 +551,29 @@ start(gameTimer);
                 writeline(PicoObj, sprintf('a%d', ledVal));
             end
 
+            % Servo: 180 on the lose screen, back to 0 on the home screen
+            if gameState == "lose"
+                servoAngle = 180;
+            elseif gameState == "start"
+                servoAngle = 0;
+            else
+                servoAngle = servoSent;     % keep where it is
+            end
+            % Send on change, and keep resending once a second until the Pico confirms
+            % (covers commands lost while the Pico was booting or after a soft reset)
+            if servoAngle >= 0 && (servoAngle ~= servoSent || ...
+                    (servoConfirmed ~= servoAngle && toc(lastServoSend) > 1))
+                writeline(PicoObj, sprintf('s%d', servoAngle));
+                lastServoSend = tic;
+                if servoAngle ~= servoSent
+                    fprintf("Servo -> %d deg\n", servoAngle);
+                end
+                servoSent = servoAngle;
+                if servoConfirmed ~= servoAngle
+                    servoLbl.Text = sprintf("Servo: sent %d%s, waiting for Pico...", servoAngle, char(176));
+                end
+            end
+
         catch err
             % Lost the Pico
             if ~isvalid(fig) || ~isvalid(adminFig)
@@ -515,6 +594,10 @@ start(gameTimer);
             set(gauges, "Value", 0);
             brtLbl.Text = "LED Brightness: 0";
             vibLbl.Text = "Accelerometer: --";
+            servoLbl.Text = "Servo: --";
+            if gameState == "playing"
+                logRound("disconnected");
+            end
             gameState = "start";
             set(hints(:,4), "Text", "Searching...");
             set(statusLbl, "Text", "Pico lost - searching...", "FontColor", C.coral);
@@ -539,8 +622,129 @@ start(gameTimer);
         end
     end
 
+    %% Leaderboard: read leaderboard.txt (name,time_s,date_time)
+    function b = loadBoard()
+        b = struct("name", {}, "time", {}, "date", {});
+        if ~isfile(LEADERBOARD)
+            return
+        end
+        try
+            lines = readlines(LEADERBOARD);
+            for i = 1:numel(lines)
+                parts = split(strtrim(lines(i)), ",");
+                t = str2double(parts(min(2, end)));
+                if numel(parts) < 3 || isnan(t)
+                    continue    % header, blank or broken line
+                end
+                b(end+1) = struct("name", parts(1), "time", t, "date", parts(3)); %#ok<AGROW>
+            end
+            [~, order] = sort([b.time]);
+            b = b(order);
+        catch lbErr
+            fprintf("Could not read leaderboard: %s\n", lbErr.message);
+        end
+    end
+
+    %% Leaderboard: random unused name like "Sneaky Gecko 42"
+    function name = makeName()
+        adjs  = ["Sneaky", "Silent", "Quiet", "Tiptoe", "Shadow", "Stealthy", "Gentle", ...
+                 "Hushed", "Misty", "Velvet", "Sleepy", "Soft-Step", "Careful", "Ghostly"];
+        nouns = ["Olm", "Gecko", "Newt", "Bat", "Shrimp", "Crayfish", "Salamander", ...
+                 "Glowworm", "Cavefish", "Spelunker", "Pebble", "Axolotl", "Beetle", "Mole"];
+        taken = string({board.name});
+        for tries = 1:200
+            name = adjs(randi(numel(adjs))) + " " + nouns(randi(numel(nouns))) + " " + randi(99);
+            if ~any(taken == name)
+                return
+            end
+        end
+        name = name + " " + string(numel(board) + 1);   % very unlikely fallback
+    end
+
+    %% Leaderboard: add a winner, save, and show it on the win screen
+    function addWinner(t)
+        name = makeName();
+        board(end+1) = struct("name", name, "time", t, ...
+            "date", string(datetime("now", "Format", "yyyy-MM-dd HH:mm:ss")));
+        [~, order] = sort([board.time]);
+        board = board(order);
+        pos = find(string({board.name}) == name, 1);
+
+        % Save the whole board, fastest first
+        try
+            fid = fopen(LEADERBOARD, "w");
+            if fid < 0
+                error("could not open %s", LEADERBOARD);
+            end
+            closeFid = onCleanup(@() fclose(fid));
+            fprintf(fid, "name,time_s,date_time\n");
+            for i = 1:numel(board)
+                fprintf(fid, "%s,%.2f,%s\n", board(i).name, board(i).time, board(i).date);
+            end
+            clear closeFid
+        catch lbErr
+            fprintf("Could not save leaderboard: %s\n", lbErr.message);
+        end
+
+        % Win screen text
+        set(subLbls(:,2), "Text", sprintf("You are %s  -  #%d of %d  (%.1f s)", ...
+            name, pos, numel(board), t));
+        set(lbLbls, "Text", boardHtml(pos));
+        fprintf("Leaderboard: %s placed #%d of %d with %.2f s\n", name, pos, numel(board), t);
+    end
+
+    %% Leaderboard: top places as HTML, with the new player highlighted
+    function html = boardHtml(pos)
+        hex = @(c) sprintf("#%02X%02X%02X", round(c * 255));
+        rows = 1:min(LB_SHOW, numel(board));
+        if pos > LB_SHOW
+            rows = [rows 0 pos];    % 0 = "..." gap, then the player's own place
+        end
+        html = "<b><span style='color:" + hex(C.gold) + "'>LEADERBOARD</span></b><br>";
+        for r = rows
+            if r == 0
+                html = html + "<span style='color:" + hex(C.text) + "'>...</span><br>";
+                continue
+            end
+            line = sprintf("#%d&nbsp;&nbsp;%s&nbsp;&nbsp;-&nbsp;&nbsp;%.1f s", r, board(r).name, board(r).time);
+            if r == pos
+                html = html + "<b><span style='color:" + hex(C.glow) + "'>" + line + "&nbsp;&nbsp;&lt;- you</span></b><br>";
+            else
+                html = html + "<span style='color:" + hex(C.text) + "'>" + line + "</span><br>";
+            end
+        end
+    end
+
+    %% Append one round to round_data.txt
+    function logRound(result)
+        try
+            info = dir(ROUND_LOG);
+            newFile = isempty(info) || info.bytes == 0;
+            fid = fopen(ROUND_LOG, "a");
+            if fid < 0
+                error("could not open %s", ROUND_LOG);
+            end
+            closeFid = onCleanup(@() fclose(fid));
+            if newFile
+                fprintf(fid, "date_time,result,time_s,threshold_low,threshold_high,avg_accel,peak_accel,samples\n");
+            end
+            avgAccel = roundSum / max(roundCount, 1);
+            fprintf(fid, "%s,%s,%.2f,%.1f,%.1f,%.3f,%.3f,%d\n", ...
+                string(datetime("now", "Format", "yyyy-MM-dd HH:mm:ss")), result, toc(roundTimer), ...
+                vibrationThreshold, vibrationMax, avgAccel, roundPeak, roundCount);
+            fprintf("Round logged: %s in %.1f s (avg %.2f, peak %.2f)\n", ...
+                result, toc(roundTimer), avgAccel, roundPeak);
+        catch logErr
+            fprintf("Could not log round: %s\n", logErr.message);
+        end
+    end
+
     %% Cleanup
     function shutdown()
+        if gameState == "playing"
+            logRound("quit");
+            gameState = "start";
+        end
         if ~isempty(PicoObj)
             try
                 writeline(PicoObj, "a0");

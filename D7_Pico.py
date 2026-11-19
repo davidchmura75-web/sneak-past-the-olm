@@ -4,7 +4,7 @@
 # Milestone 4
 # Broadcasts accelerometer data and beam break detection and listens for LED brightness and listens for LED signals
 
-from machine import I2C, Pin
+from machine import I2C, Pin, PWM
 import time
 import struct
 import select
@@ -48,6 +48,20 @@ boardled = Pin(BoardLEDPIN, Pin.OUT)
 StartButtonPin = 22
 start_button = Pin(StartButtonPin, Pin.IN, Pin.PULL_UP)
 
+# Servo Pin - standard hobby servo driven with 50 Hz PWM
+ServoPin = 13
+servo = PWM(Pin(ServoPin))
+servo.freq(50) # 20 ms period
+SERVO_MIN_US = 500 # pulse width at 0 degrees
+SERVO_MAX_US = 2500 # pulse width at 180 degrees
+def set_servo(angle):
+    # Clamp to 0-180 and convert the angle to a pulse width, then to a 16-bit duty cycle
+    angle = max(0, min(180, angle))
+    pulse_us = SERVO_MIN_US + (SERVO_MAX_US - SERVO_MIN_US) * angle / 180
+    servo.duty_u16(int(pulse_us * 65535 / 20000))
+
+set_servo(0) # start at the home position
+
 # Accelerometer Values
 accel_x = 0
 accel_y = 0
@@ -75,6 +89,7 @@ last_end_beam_change = time.ticks_ms() # last change time
 # Tell MATLAB the current beam states on boot so it's in sync after a restart
 print(f"B2:{1 - start_beam_state}")
 print(f"B3:{1 - end_beam_state}")
+print("V1:0") # servo starts at home
 
 try:
     while True:
@@ -175,10 +190,21 @@ try:
 
                     # Write that color to the LED strip
                     strip.write()
+
+            # IF that character is the servo identifier, move the servo to that angle (e.g. "s180")
+            elif ser_code == 's':
+                angle_string = sys.stdin.readline().strip()
+                try:
+                    angle = max(0, min(180, int(float(angle_string))))
+                    set_servo(angle)
+                    print(f"V1:{angle}") # confirm the move back to MATLAB
+                except ValueError:
+                    pass  # ignore garbage instead of crashing
         
         time.sleep(1 / 120.0) # sleep to assure reading quality
 finally:
     boardled.off()
     strip.fill((0, 0, 0)) # turn the strip off if the code stops
     strip.write()
+    servo.deinit() # stop sending pulses to the servo
 

@@ -1,0 +1,2 @@
+date_time,result,time_s,threshold_low,threshold_high,avg_accel,peak_accel,samples
+2026-11-19 15:48:33,lose,25.14,1.0,7.0,3.308,1311.610,2049
