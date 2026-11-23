@@ -2,14 +2,14 @@
 # D.Chmura
 # 11/9/2026
 # Milestone 4
-# Broadcasts accelerometer data and beam break detection and listens for LED brightness and listens for LED signals
+# Broadcasts accelerometer data and beam break detection and listens for servo commands
+# Serial out: S1 accel, B1 button, B2 start beam, B3 end beam, B4-B6 special event beams, V1 servo, E1 errors
 
 from machine import I2C, Pin, PWM
 import time
 import struct
 import select
 import sys
-import neopixel
 
 # set up i2c communication with the accelerometer
 i2c = I2C(0, sda=Pin(0), scl=Pin(1), freq=400000)
@@ -26,26 +26,27 @@ def wake_accel():
 wake_accel()
 last_accel_error = time.ticks_add(time.ticks_ms(), -2000) # last time we reported an accelerometer error
 
-# Set up LED Strip
-LED_PIN = 18
-NUM_LEDS = 19 # number of LEDs on strip
-strip = neopixel.NeoPixel(Pin(LED_PIN), NUM_LEDS)
-LED_COLOR = (255, 0, 0) # full brightness color
-strip.fill((0, 0, 0)) # start with strip off
-strip.write()
-
 # Beam Break Sensor Pins
-StartBeamPin = 16
+StartBeamPin = 15
 start_beam = Pin(StartBeamPin, Pin.IN, Pin.PULL_UP)
-EndBeamPin = 17
+EndBeamPin = 16
 end_beam = Pin(EndBeamPin, Pin.IN, Pin.PULL_UP)
+
+# Special Event Beam Break Sensor Pins - sent to MATLAB as B4, B5 and B6
+SpecialBeamPins = [27, 17, 14] # side path 1 = GP14 (pin 19), side path 2 = GP17 (pin 22), side path 3 = GP27 (pin 32)
+special_beams = []
+for i, pin_num in enumerate(SpecialBeamPins):
+    special_beams.append({
+        "code": f"B{4 + i}", # B4 = special event 1, B5 = event 2, B6 = event 3
+        "pin": Pin(pin_num, Pin.IN, Pin.PULL_UP),
+    })
 
 # Board LED pin to show if code crashed or not
 BoardLEDPIN = 25
 boardled = Pin(BoardLEDPIN, Pin.OUT)
 
 # Start Pin
-StartButtonPin = 22
+StartButtonPin = 18
 start_button = Pin(StartButtonPin, Pin.IN, Pin.PULL_UP)
 
 # Servo Pin - standard hobby servo driven with 50 Hz PWM
@@ -86,9 +87,15 @@ last_start_beam_change = time.ticks_ms() # last change time
 end_beam_state = end_beam.value() # 0 = part on
 last_end_beam_reading = end_beam_state # last raw reading
 last_end_beam_change = time.ticks_ms() # last change time
+for beam in special_beams:
+    beam["state"] = beam["pin"].value() # 0 = part on
+    beam["last_reading"] = beam["state"] # last raw reading
+    beam["last_change"] = time.ticks_ms() # last change time
 # Tell MATLAB the current beam states on boot so it's in sync after a restart
 print(f"B2:{1 - start_beam_state}")
 print(f"B3:{1 - end_beam_state}")
+for beam in special_beams:
+    print(f"{beam['code']}:{1 - beam['state']}")
 print("V1:0") # servo starts at home
 
 try:
@@ -159,40 +166,28 @@ try:
             end_beam_state = end_beam_reading
             print(f"B3:{1 - end_beam_state}") # flip it so 1 = part on the beam, 0 = clear
 
-        # check for serial data - This shows how much vibrations the olm detects, sent as a brightness percentage
+        # HANDLE SPECIAL EVENT BEAMS - same debounce as the start/end beams, sends B4/B5/B6
+        for beam in special_beams:
+            reading = beam["pin"].value()
+
+            # If the raw reading changed, restart the window timer
+            if reading != beam["last_reading"]:
+                beam["last_change"] = time.ticks_ms()
+                beam["last_reading"] = reading
+
+            # If the reading has stayed the same for the whole window and is different, send the change
+            if time.ticks_diff(time.ticks_ms(), beam["last_change"]) > BEAM_WINDOW_MS and reading != beam["state"]:
+                beam["state"] = reading
+                print(f"{beam['code']}:{1 - reading}") # flip it so 1 = part on the beam, 0 = clear
+
+        # check for serial data from MATLAB (servo commands)
         if select.select([sys.stdin], [], [], 0)[0]:
             
             # Read a character from the buffer
             ser_code = sys.stdin.read(1)
 
-            # IF that character is our identifier
-            if ser_code == 'a':
-
-                # Get following number
-                number_string = sys.stdin.readline().strip()
-                try:
-                    data_in = int(float(number_string))  # float first so "50.0" also works
-                except ValueError:
-                    data_in = None  # ignore garbage instead of crashing
-
-                if data_in is not None:
-                    # Clamp to 0-100 so a bad value can't index past the strip
-                    data_in = max(0, min(100, data_in))
-
-                    # Scale the strip color by the 0-100 brightness percentage
-                    led_brightness = data_in / 100
-                    r, g_val, b = LED_COLOR
-                    color = (int(r * led_brightness * 0.5), int(g_val * led_brightness * 0.5), int(b * led_brightness * 0.5))
-
-                    strip.fill((0, 0, 0))  # clear the strip (fill takes ONE tuple)
-                    for i in range(int(NUM_LEDS * led_brightness)):
-                        strip[i] = color  # light LEDs one at a time
-
-                    # Write that color to the LED strip
-                    strip.write()
-
             # IF that character is the servo identifier, move the servo to that angle (e.g. "s180")
-            elif ser_code == 's':
+            if ser_code == 's':
                 angle_string = sys.stdin.readline().strip()
                 try:
                     angle = max(0, min(180, int(float(angle_string))))
@@ -204,7 +199,5 @@ try:
         time.sleep(1 / 120.0) # sleep to assure reading quality
 finally:
     boardled.off()
-    strip.fill((0, 0, 0)) # turn the strip off if the code stops
-    strip.write()
     servo.deinit() # stop sending pulses to the servo
 
