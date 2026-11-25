@@ -20,23 +20,23 @@ BAUD = 9600;
 IDLE_TIMEOUT = 20;  % seconds until reset
 NO_DATA_KICK = 3;   % seconds until soft reset
 NO_DATA_DROP = 8;   % seconds until reconnect
-ROUND_LOG = fullfile(fileparts(mfilename("fullpath")), "round_data.txt");  % one line per round
-LEADERBOARD = fullfile(fileparts(mfilename("fullpath")), "leaderboard.txt"); % every win, fastest first
-CAUGHT_SOUND = fullfile(fileparts(mfilename("fullpath")), "olm_caught.wav"); % plays when the olm catches you (placeholder - replace the file with your own)
-G = 9.81;           % a shorted/disconnected accelerometer reads all zeros, which the Pico turns into exactly 1g
-SHORT_TOL = 0.05;   % readings within this of 1g count as "stuck at 1g"
-SHORT_WIN = 100;    % look at the last this many readings (~1 s)
-SHORT_HITS = 10;    % this many stuck-at-1g readings in the window = probably shorting
-LB_SHOW = 5;        % how many places to show on the win screen
-B2B_GAP = 20;       % a run that starts less than this many seconds after the last round ended is marked back to back
-NUM_EVENTS = 3;     % special event beams on the Pico (B4, B5, B6)
-SPOT_BONUS = 10;    % seconds taken off the round time for each special spot found (once per spot per round)
-SMOOTH_N = 6;       % accelerometer readings averaged for the gauge (~0.06 s at ~100 readings/s; bigger = smoother but slower)
-WARN_PCT = 70;      % alert meter % that shows "the olm feels your vibrations"
-WARN_HOLD = 3;      % seconds that warning stays up after the meter drops back below WARN_PCT
-LEAVE_GRACE = 1;  % seconds the spot's beam must stay clear before going back to the cave (sensor flicker)
-CHECK = char(10004); % checkmark for a found spot
-CROSS = "X";        % plain X for a missed spot (every font has it, so it always shows red)
+ROUND_LOG = fullfile(fileparts(mfilename("fullpath")), "round_data.txt");
+LEADERBOARD = fullfile(fileparts(mfilename("fullpath")), "leaderboard.txt");
+CAUGHT_SOUND = fullfile(fileparts(mfilename("fullpath")), "olm_caught.wav");
+G = 9.81;           % 1g = shorted sensor
+SHORT_TOL = 0.05;   % 1g tolerance
+SHORT_WIN = 100;    % readings checked
+SHORT_HITS = 10;    % 1g readings = shorting
+LB_SHOW = 5;        % leaderboard places
+B2B_GAP = 20;       % back to back gap (s)
+NUM_EVENTS = 3;     % secret spots
+SPOT_BONUS = 10;    % seconds off per spot
+SMOOTH_N = 6;       % readings averaged
+WARN_PCT = 70;      % warning at %
+WARN_HOLD = 3;      % warning hold (s)
+LEAVE_GRACE = 1;    % spot leave delay (s)
+CHECK = char(10004);
+CROSS = "X";
 
 %% Colors
 C.abyss = [0.02 0.09 0.17];
@@ -320,42 +320,42 @@ lastHeights = [0 0];
 gameState = "start";    % start/playing/win/lose
 startBeamOn = false;
 lastActivity = tic;
-servoSent = -1;         % last servo angle sent to the Pico (-1 = not sent yet)
-servoConfirmed = -1;    % last servo angle the Pico reported back (-1 = unknown)
+servoSent = -1;         % -1 = not sent
+servoConfirmed = -1;    % -1 = unknown
 lastServoSend = tic;
-activeEvent = 0;        % special event page showing (0 = none, 1-3 = event number)
-spotsFound = false(1, NUM_EVENTS);  % special spots found this round
-warnOn = false;         % "the olm feels your vibrations" showing
-lastWarn = tic;         % last time the meter was at/over WARN_PCT
-eventLeaving = false;   % part left the active spot's beam, waiting out LEAVE_GRACE
-leaveTimer = tic;       % when the part left the active spot's beam
+activeEvent = 0;        % 0 = none
+spotsFound = false(1, NUM_EVENTS);
+warnOn = false;
+lastWarn = tic;
+eventLeaving = false;
+leaveTimer = tic;
 
-vibes = 0.0;            % latest accelerometer reading
-vibPct = 0.0;           % vibration as a 0-100 percentage of the slider range
+vibes = 0.0;
+vibPct = 0.0;           % 0-100
 history = zeros(1, SMOOTH_N);
 
 vibrationThreshold = 1.0;
 vibrationMax = 5.0;
 
-% Current round stats (reset when a round starts)
+% Round stats
 roundTimer = tic;
-roundSum = 0;       % sum of accelerometer readings this round
-roundCount = 0;     % number of readings this round
-roundPeak = 0;      % highest accelerometer reading this round
+roundSum = 0;
+roundCount = 0;
+roundPeak = 0;
 
-% Leaderboard (name, time, date) - loaded from leaderboard.txt
+% Leaderboard
 board = loadBoard();
 
-% Accelerometer short detection
-stuckHist = false(1, SHORT_WIN);   % which of the last readings were stuck at 1g
+% Short detection
+stuckHist = false(1, SHORT_WIN);
 shorting = false;
 
-% "Olm caught you" sound - placeholder is generated the first time if the file is missing
+% Caught sound
 caughtPlayer = makeCaughtPlayer();
 
-% Back-to-back runs (marked B2B on the leaderboard)
-lastRoundEnd = lastLoggedEnd();  % when the previous round ended (NaT = never)
-backToBack = false;              % this round started < B2B_GAP s after the last one
+% Back to back
+lastRoundEnd = lastLoggedEnd();
+backToBack = false;
 
 %% Connection state
 PicoObj = [];
