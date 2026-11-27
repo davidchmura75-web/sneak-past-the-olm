@@ -23,6 +23,8 @@ NO_DATA_DROP = 8;   % seconds until reconnect
 ROUND_LOG = fullfile(fileparts(mfilename("fullpath")), "round_data.txt");
 LEADERBOARD = fullfile(fileparts(mfilename("fullpath")), "leaderboard.txt");
 CAUGHT_SOUND = fullfile(fileparts(mfilename("fullpath")), "olm_caught.wav");
+MUSIC_NAME = fullfile(fileparts(mfilename("fullpath")), "background_music"); % .mp3/.wav/.m4a/.ogg/.flac
+MUSIC_VOLUME = 0.4; % 0-1
 G = 9.81;           % 1g = shorted sensor
 SHORT_TOL = 0.05;   % 1g tolerance
 SHORT_WIN = 100;    % readings checked
@@ -46,6 +48,8 @@ C.text  = [0.82 0.96 1.00];
 C.glow  = [0.40 1.00 0.65];
 C.coral = [1.00 0.42 0.45];
 C.gold  = [1.00 0.80 0.35];
+C.red   = [1.00 0.25 0.25];
+C.blue  = [0.35 0.65 1.00];
 
 %% Font
 % Oh Whale (fonts/OhWhale-oYZq.ttf)
@@ -222,13 +226,14 @@ bigLbls = gobjects(2, NUM_SCR);
 subLbls = gobjects(2, NUM_SCR);
 hints   = gobjects(2, NUM_SCR);
 lbLbls  = gobjects(2, 1);   % leaderboard on the win screen
+spotsLbls = gobjects(2, 1); % big secret spot marks on the win screen
 instrLbls = gobjects(2, 1); % how-to-play instructions on the gameplay page
 dialLbls  = gobjects(2, 1); % what the gauge means
 warnLbls  = gobjects(2, 1); % "the olm feels your vibrations" warning
 
 for k = 1:2
     grid = uigridlayout(parents{k}, [5 4], ...
-        "RowHeight", {'0.03x', '0.1x', '1x', '0.18x', '0.03x'}, ...
+        "RowHeight", {'0.02x', '0.12x', '1x', '0.12x', '0.02x'}, ...
         "ColumnWidth", {'0.02x', '1.3x', '1x', '0.02x'}, ...
         "Padding", 0, "RowSpacing", 6, "ColumnSpacing", 12, ...
         "BackgroundColor", C.abyss);
@@ -242,11 +247,11 @@ for k = 1:2
     img.Layout.Row = 3; img.Layout.Column = 2;
 
     % Vibration gauge, with a label saying what it is and a warning underneath
-    gaugeCol = uigridlayout(grid, [3 1], "RowHeight", {'0.22x', '1x', '0.22x'}, ...
+    gaugeCol = uigridlayout(grid, [3 1], "RowHeight", {'0.3x', '1x', '0.3x'}, ...
         "ColumnWidth", {'1x'}, "Padding", 0, "RowSpacing", 4, "BackgroundColor", C.abyss);
     gaugeCol.Layout.Row = 3; gaugeCol.Layout.Column = 3;
 
-    dialLbls(k) = uilabel(gaugeCol, "Text", sprintf("OLM ALERT METER\nHits 100%% = the olm wakes up"), ...
+    dialLbls(k) = uilabel(gaugeCol, "Text", sprintf("OLM ALERT METER\n100%% = olm wakes up"), ...
         "FontName", FONT, "FontSize", 18, "FontWeight", "bold", "FontColor", C.gold, ...
         "HorizontalAlignment", "center", "VerticalAlignment", "bottom", "WordWrap", "on");
     dialLbls(k).Layout.Row = 1;
@@ -263,11 +268,9 @@ for k = 1:2
         "Visible", "off");
     warnLbls(k).Layout.Row = 3;
 
-    % How to play
-    instrLbls(k) = uilabel(grid, "Text", sprintf( ...
-        "Sneak the prey past the olm to the end of the cave without waking it up.\n" + ...
-        "Find the 3 secret spots on the way - each one takes %d seconds off your time!", SPOT_BONUS), ...
-        "FontName", FONT, "FontSize", 18, "FontColor", C.text, ...
+    % Short reminder (full instructions are on the start page)
+    instrLbls(k) = uilabel(grid, "Text", "Move gently & find the secret spots!", ...
+        "FontName", FONT, "FontSize", 18, "FontWeight", "bold", "FontColor", C.text, ...
         "HorizontalAlignment", "center", "WordWrap", "on");
     instrLbls(k).Layout.Row = 4; instrLbls(k).Layout.Column = [2 3];
 
@@ -276,23 +279,36 @@ for k = 1:2
         pnl = uipanel(grid, "BorderType", "none", "BackgroundColor", scrBg(s,:));
         pnl.Layout.Row = [1 5]; pnl.Layout.Column = [1 4];
 
-        % Every page has an olm above the title
-        rows = {'0.35x', '1.2x', '0.55x', '0.15x', '0.15x', '0.1x'};
+        % Olm picture, title, subtitle, hint/instructions
+        if s == 1
+            rows = {'0.08x', '0.75x', '0.4x', '0.22x', '0.85x', '0.04x'};   % room for instructions
+        elseif s == 2
+            rows = {'0.03x', '1.6x', '0.5x', '0.4x', '0.22x', '0.03x'};     % room for leaderboard
+        else
+            rows = {'0.2x', '1.1x', '0.5x', '0.3x', '0.25x', '0.06x'};
+        end
         ttlRow = 3;
         gl = uigridlayout(pnl, [numel(rows) 1], "RowHeight", rows, ...
             "ColumnWidth", {'1x'}, "Padding", 0, "RowSpacing", 0, ...
             "BackgroundColor", scrBg(s,:));
         if s == 2
             % Win page: olm on the left, leaderboard on the right
-            winRow = uigridlayout(gl, [1 2], "ColumnWidth", {'1x', '1x'}, ...
+            winRow = uigridlayout(gl, [1 2], "ColumnWidth", {'0.7x', '1.3x'}, ...
                 "Padding", 0, "ColumnSpacing", 20, "BackgroundColor", scrBg(s,:));
             winRow.Layout.Row = 2;
             olm = uiimage(winRow, "ImageSource", scrImg(s), "ScaleMethod", "fit");
             olm.Layout.Column = 1;
-            lbLbls(k) = uilabel(winRow, "Text", "", "Interpreter", "html", ...
+            lbCol = uigridlayout(winRow, [2 1], "RowHeight", {'0.4x', '1x'}, ...
+                "Padding", 0, "RowSpacing", 2, "BackgroundColor", scrBg(s,:));
+            lbCol.Layout.Column = 2;
+            spotsLbls(k) = uilabel(lbCol, "Text", "", "Interpreter", "html", ...
+                "FontName", FONT, "FontSize", 30, "FontColor", C.text, ...
+                "HorizontalAlignment", "left", "VerticalAlignment", "bottom");
+            spotsLbls(k).Layout.Row = 1;
+            lbLbls(k) = uilabel(lbCol, "Text", "", "Interpreter", "html", ...
                 "FontName", FONT, "FontSize", 22, "FontColor", C.text, ...
-                "HorizontalAlignment", "left", "VerticalAlignment", "center");
-            lbLbls(k).Layout.Column = 2;
+                "HorizontalAlignment", "left", "VerticalAlignment", "top");
+            lbLbls(k).Layout.Row = 2;
         else
             olm = uiimage(gl, "ImageSource", scrImg(s), "ScaleMethod", "fit");
             olm.Layout.Row = 2;
@@ -303,15 +319,24 @@ for k = 1:2
             "HorizontalAlignment", "center", "VerticalAlignment", "bottom");
         bigLbls(k,s).Layout.Row = ttlRow;
         subLbls(k,s) = uilabel(gl, "Text", scrSub(s), "FontName", FONT, "FontSize", 22, ...
-            "FontColor", C.text, "HorizontalAlignment", "center");
+            "FontWeight", "bold", "FontColor", C.text, "HorizontalAlignment", "center", "WordWrap", "on");
         subLbls(k,s).Layout.Row = ttlRow + 1;
         hints(k,s) = uilabel(gl, "Text", "Move to start", "FontName", FONT, "FontSize", 24, ...
-            "FontWeight", "bold", "FontColor", C.gold, "HorizontalAlignment", "center");
+            "FontWeight", "bold", "FontColor", C.gold, "HorizontalAlignment", "center", ...
+            "VerticalAlignment", "top", "WordWrap", "on");
         hints(k,s).Layout.Row = ttlRow + 2;
 
         screens(k,s) = pnl;
     end
     hints(k,4).Text = "Searching...";
+
+    % Start page: how to play
+    set(hints(k,1), "FontColor", C.text, "Text", sprintf( ...
+        "HOW TO PLAY\n" + ...
+        "Sneak the prey past the olm to the end of the cave\n" + ...
+        "Move gently - shaking wakes the olm (watch the alert meter)\n" + ...
+        "Find the 3 secret spots - each one takes %d s off your time\n" + ...
+        "Fastest times make the leaderboard!", SPOT_BONUS));
 end
 
 lastHeights = [0 0];
@@ -352,6 +377,9 @@ shorting = false;
 
 % Caught sound
 caughtPlayer = makeCaughtPlayer();
+
+% Background music (none until a background_music file is added)
+musicPlayer = makeMusicPlayer();
 
 % Back to back
 lastRoundEnd = lastLoggedEnd();
@@ -419,11 +447,14 @@ start(gameTimer);
             if heights(n) ~= lastHeights(n)
                 h = heights(n);
                 set(bigLbls(n,:), "FontSize", max(16, round(h * 0.15)));
-                set([subLbls(n,:) hints(n,:)], "FontSize", max(8, round(h * 0.035)));
-                lbLbls(n).FontSize = max(8, round(h * 0.03));
-                titles(n).FontSize = max(10, round(h * 0.04));
-                instrLbls(n).FontSize = max(9, round(h * 0.03) + 2);    % instructions 2 sizes bigger
-                set([dialLbls(n) warnLbls(n)], "FontSize", max(6, round(h * 0.03) - 2));
+                set([subLbls(n,:) hints(n,2:end)], "FontSize", max(10, round(h * 0.05)));
+                hints(n,1).FontSize = max(9, round(h * 0.047));        % start page instructions
+                lbLbls(n).FontSize = max(9, round(h * 0.036));
+                spotsLbls(n).FontSize = max(12, round(h * 0.06));
+                titles(n).FontSize = max(12, round(h * 0.055));
+                instrLbls(n).FontSize = max(10, round(h * 0.05));
+                set([dialLbls(n) warnLbls(n)], "FontSize", max(9, round(h * 0.04)));
+                gauges(n).FontSize = max(8, round(h * 0.028));
             end
         end
         lastHeights = heights;
@@ -435,20 +466,20 @@ start(gameTimer);
         set(screens(:,4), "Visible", isempty(PicoObj));
 
         % Start screen title says "Move to start" until the prey is on the start beam
+        % "Bring to start" text is red until the prey is on the start beam, then blue
         if startBeamOn
             set(bigLbls(:,1), "Text", "Start");
-            set(subLbls(:,1), "Text", "Press the start button to dive into the cavern");
+            set(subLbls(:,1), "Text", "Press the start button to dive into the cavern", "FontColor", C.blue);
+            set(hints(:,2:3), "Text", "Press the start button to play again", "FontColor", C.blue);
         else
             set(bigLbls(:,1), "Text", "Move to start");
-            set(subLbls(:,1), "Text", "Move the prey to the start line");
+            set(subLbls(:,1), "Text", "Move the prey to the start line", "FontColor", C.red);
+            set(hints(:,2:3), "Text", "Bring the prey back to the start to reset", "FontColor", C.red);
         end
-        set(hints(:,1), "Visible", "off");
 
-        % Win/lose screens: how to reset
-        if startBeamOn
-            set(hints(:,2:3), "Text", "Press the start button to play again");
-        else
-            set(hints(:,2:3), "Text", "Bring the prey back to the start to reset");
+        % Keep the background music looping
+        if ~isempty(musicPlayer) && ~isplaying(musicPlayer)
+            play(musicPlayer);
         end
 
         % "The olm feels your vibrations" - stays WARN_HOLD seconds after the meter drops
@@ -891,69 +922,74 @@ start(gameTimer);
         set(subLbls(:,2), "Text", sprintf("You are %s  -  #%d of %d  (%s)", ...
             name, pos, numel(board), timeTxt));
         set(lbLbls, "Text", boardHtml(pos));
+        set(spotsLbls, "Text", spotsHtml(pos));
         fprintf("Leaderboard: %s placed #%d of %d with %.2f s (%.2f raw, spots %s%s)\n", ...
             name, pos, numel(board), t, rawTime, board(pos).spots, ...
             string(repmat(', back to back', 1, backToBack)));
     end
 
-    %% Three checkmarks: green for a found spot, dim for a missed one
-    function html = checksHtml(spots, sz)
+    %% Three marks: green check = found, red X = missed
+    % (MATLAB labels only support <font color>, not <span style>)
+    function html = checksHtml(spots)
         html = "";
         spots = char(spots);
         if numel(spots) ~= NUM_EVENTS
-            spots = repmat('0', 1, NUM_EVENTS);  % old entry from before spots were tracked - all X
+            spots = repmat('0', 1, NUM_EVENTS);  % old entry - all X
         end
         for i = 1:NUM_EVENTS
             if spots(i) == '1'
-                col = "#33FF66";    % bright green check = found
-                mark = CHECK;
+                html = html + fontHtml("#33FF66", CHECK) + "&nbsp;";
             else
-                col = "#FF1F1F";    % bright red X = missed
-                mark = CROSS;
+                html = html + fontHtml("#FF1F1F", CROSS) + "&nbsp;";
             end
-            html = html + "<span style='color:" + col + ";font-size:" + sz + "'>" + mark + "</span>&nbsp;";
         end
+    end
+
+    function h = fontHtml(col, txt)
+        h = "<font color=""" + col + """>" + txt + "</font>";
     end
 
     function h = hexColor(c)
         h = sprintf("#%02X%02X%02X", round(c * 255));
     end
 
-    %% Leaderboard: this round's checkmarks, then top places as HTML, with the new player highlighted
+    %% Win screen: this round's secret spots (big label above the leaderboard)
+    function html = spotsHtml(pos)
+        found = nnz(char(board(pos).spots) == '1');
+        html = "<b>" + fontHtml(hexColor(C.gold), "SECRET SPOTS") + ...
+            fontHtml(hexColor(C.text), sprintf("&nbsp;&nbsp;%d of %d found", found, NUM_EVENTS)) + ...
+            "<br>" + checksHtml(board(pos).spots) + "</b>";
+    end
+
+    %% Leaderboard: top places as HTML, with the new player highlighted
     function html = boardHtml(pos)
         hex = @hexColor;
         rows = 1:min(LB_SHOW, numel(board));
         if pos > LB_SHOW
             rows = [rows 0 pos];    % 0 = "..." gap, then the player's own place
         end
-        found = nnz(char(board(pos).spots) == '1');
-        html = "<b><span style='color:" + hex(C.gold) + ";font-size:150%'>SECRET SPOTS</span>" + ...
-            sprintf("<span style='color:%s;font-size:150%%'>&nbsp;&nbsp;%d of %d found</span><br>", ...
-                hex(C.text), found, NUM_EVENTS) + ...
-            checksHtml(board(pos).spots, "320%") + "</b><br><br>";
-        html = html + "<b><span style='color:" + hex(C.gold) + "'>LEADERBOARD</span></b><br>";
+        html = "<b>" + fontHtml(hex(C.gold), "LEADERBOARD") + "</b><br>";
         anyB2B = false;
         for r = rows
             if r == 0
-                html = html + "<span style='color:" + hex(C.text) + "'>...</span><br>";
+                html = html + fontHtml(hex(C.text), "...") + "<br>";
                 continue
             end
             line = sprintf("#%d&nbsp;&nbsp;%s&nbsp;&nbsp;-&nbsp;&nbsp;%.1f s&nbsp;&nbsp;", r, board(r).name, board(r).time);
-            checks = checksHtml(board(r).spots, "100%");
+            checks = checksHtml(board(r).spots);
             if board(r).b2b
-                checks = checks + "<span style='color:" + hex(C.gold) + "'>&nbsp;B2B</span>";
+                checks = checks + fontHtml(hex(C.gold), "&nbsp;B2B");
                 anyB2B = true;
             end
             if r == pos
-                html = html + "<b><span style='color:" + hex(C.glow) + "'>" + line + "</span>" + checks + ...
-                    "<span style='color:" + hex(C.glow) + "'>&nbsp;&lt;- you</span></b><br>";
+                html = html + "<b>" + fontHtml(hex(C.glow), line) + checks + ...
+                    fontHtml(hex(C.glow), "&nbsp;&lt;- you") + "</b><br>";
             else
-                html = html + "<span style='color:" + hex(C.text) + "'>" + line + "</span>" + checks + "<br>";
+                html = html + fontHtml(hex(C.text), line) + checks + "<br>";
             end
         end
         if anyB2B
-            html = html + sprintf("<span style='color:%s;font-size:75%%'>B2B = back to back (started under %d s after the last round)</span>", ...
-                hex(C.gold), B2B_GAP);
+            html = html + fontHtml(hex(C.gold), sprintf("B2B = back to back (under %d s after the last round)", B2B_GAP));
         end
     end
 
@@ -1063,6 +1099,26 @@ start(gameTimer);
         end
     end
 
+    %% Background music: first background_music.* file found, looped by gameTick
+    function p = makeMusicPlayer()
+        p = [];
+        for ext = [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
+            f = MUSIC_NAME + ext;
+            if ~isfile(f)
+                continue
+            end
+            try
+                [y, fs] = audioread(f);
+                p = audioplayer(single(y * MUSIC_VOLUME), fs);
+                fprintf("Background music: %s\n", f);
+            catch musErr
+                fprintf("Could not load music %s: %s\n", f, musErr.message);
+            end
+            return
+        end
+        fprintf("No background music - add background_music.mp3 (or .wav) next to the game\n");
+    end
+
     function playCaught()
         try
             if ~isempty(caughtPlayer)
@@ -1091,6 +1147,13 @@ start(gameTimer);
         if gameState == "playing"
             logRound("quit");
             gameState = "start";
+        end
+        try
+            if ~isempty(musicPlayer)
+                stop(musicPlayer);
+                musicPlayer = [];
+            end
+        catch
         end
         if ~isempty(PicoObj)
             try
